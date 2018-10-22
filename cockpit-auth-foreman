@@ -10,6 +10,9 @@ import json
 import urllib2
 import base64
 import subprocess
+import urlparse
+import socket
+import select
 
 def dbg(str):
     sys.stderr.write(str + "\n")
@@ -116,6 +119,77 @@ def api_call(path, token):
     dbg("<= %s" % resp)
     return json.loads(resp)
 
+# Interactive SSH via the smart proxy
+
+def ssh_proxy(urlstr):
+    url = urlparse.urlparse(urlstr)
+    sock = socket.create_connection((url.hostname, url.port))
+
+    client_eof = False
+    sock_eof = False
+
+    inp_buf = "POST /bash HTTP/1.1\nConnection: upgrade\nUpgrade: raw\n\n"
+    out_buf = ""
+
+    expecting_http_header = True
+
+    while True:
+        readers = [ ]
+        writers = [ ]
+        if not client_eof:
+            readers.append(0)
+        if not sock_eof:
+            readers.append(sock)
+        if len(inp_buf) > 0:
+            writers.append(sock)
+        if len(out_buf) > 0:
+            if expecting_http_header:
+                header_end = out_buf.find("\r\n\r\n")
+                if header_end >= 0:
+                    header = out_buf[1:header_end]
+                    out_buf = out_buf[header_end+4:]
+                    expecting_http_header = False
+            else:
+                writers.append(1)
+        if len(readers) + len(writers) == 0:
+            dbg("done")
+            break
+        (r, w, x) = select.select(readers, writers, [ ])
+        if sock in r:
+            data = os.read(sock.fileno(), 4096)
+            # dbg("<-s %s" % data)
+            out_buf += data
+            if data == "":
+                # dbg("s eof")
+                sock_eof = True
+                if out_buf == "":
+                    # dbg("c close")
+                    os.close(1)
+        if sock in w:
+            n = os.write(sock.fileno(), inp_buf)
+            # dbg("->s %s" % n)
+            inp_buf = inp_buf[n:]
+            if inp_buf == "" and client_eof:
+                # dbg("s close")
+                sock.shutdown(socket.SHUT_WR);
+        if 0 in r:
+            data = os.read(0, 4096)
+            # dbg("<-c %s" % data)
+            inp_buf += data
+            if data == "":
+                # dbg("c eof")
+                client_eof = True
+                if inp_buf == "":
+                    # dbg("s close")
+                    sock.shutdown(socket.SHUT_WR);
+        if 1 in w:
+            n = os.write(1, out_buf) # XXX - catch EPIPE here
+            # dbg("->c %s" % n)
+            out_buf = out_buf[n:]
+            if out_buf == "" and sock_eof:
+                # dbg("c close")
+                os.close(1)
+
 # Main
 
 def main(args):
@@ -126,22 +200,7 @@ def main(args):
     token = get_token_from_auth_data(read_auth_reply())
     data = api_call("remote_execution/ssh_params?host_id=%s" % args[1], token)
 
-    user = "root"
-    if "ssh_user" in data:
-        user = data["ssh_user"]
-
-    if data.get("ssh_key_file", None):
-        send_auth_response("private-key " + open(data["ssh_key_file"]).read())
-
-    if data.get("ssh_key_passphrase", None):
-        send_auth_response("private-key-passphrase " + base64.b64encode(data["ssh_key_passphrase"]))
-
-    if data.get("ssh_password", None):
-        send_auth_response("Basic " + base64.b64encode("%s:%s" % (user, data["ssh_password"])))
-
-    os.environ["COCKPIT_SSH_ALLOW_UNKNOWN"] = "1"
-    os.execlpe("/home/mvo/work/cockpit/cockpit-ssh", "/home/mvo/work/cockpit/cockpit-ssh",
-               user + "@" + data["hostname"], os.environ)
+    ssh_proxy(data["proxy"])
 
 if __name__ == '__main__':
     main(sys.argv)
