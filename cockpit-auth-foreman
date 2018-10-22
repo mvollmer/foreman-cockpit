@@ -1,0 +1,147 @@
+#! /usr/bin/python
+
+# This program acts as a external authentication helper for Cockpit.
+# It is spawned as part of establishing a new Cockpit session on a
+# remote machine.
+
+import sys
+import os
+import json
+import urllib2
+import base64
+import subprocess
+
+def dbg(str):
+    sys.stderr.write(str + "\n")
+
+def usage():
+    sys.stderr.write("usage {} host-id\n".format(sys.argv[0]))
+    sys.exit(os.EX_USAGE)
+
+# Cockpit protocol, encoding and decoding of control messages.
+
+def send_control(msg):
+    text = json.dumps(msg)
+    dbg("-> %s" % text)
+    os.write(1, "{}\n\n{}".format(len(text)+1, text))
+
+def read_size(fd):
+    sep = '\n'
+    size = 0
+    seen = 0
+
+    while True:
+        t = os.read(fd, 1)
+
+        if not t:
+            return 0
+
+        if t == '\n':
+            break
+
+        size = (size * 10) + int(t)
+        seen = seen + 1
+
+        if seen > 7:
+            raise ValueError("Invalid frame: size too long")
+
+    return size
+
+def read_control():
+    size = read_size(1)
+
+    data = ""
+    while size > 0:
+        d = os.read(1, size)
+        size = size - len(d)
+        data = data + d
+
+    dbg("<- %s" % data.strip())
+    return json.loads(data)
+
+# Specific control messages
+
+def send_auth_challenge(challenge):
+    send_control({
+        "command": "authorize",
+        "cookie": "1234", # must be present
+        "challenge": challenge
+    })
+
+def send_auth_response(response):
+    send_control({
+        "command": "authorize",
+        "response": response
+    })
+
+def read_auth_reply():
+    cmd = read_control()
+    response = cmd.get("response")
+    if cmd.get("command") != "authorize" or not response:
+        raise ValueError("Did not receive a valid authorize command")
+    return response
+
+def exit_with_problem(problem, message, auth_methods):
+    send_control({
+        "command": "init",
+        "problem": problem,
+        "message": message,
+        "auth-method-results": auth_methods
+    })
+    sys.exit(1)
+
+# Talking to the Foreman API
+
+def get_token_from_auth_data(auth_data):
+    f = auth_data.split(" ")
+    return f[1]
+
+def api_call(path, token):
+    dbg("=> %s" % path)
+    req = urllib2.Request("http://localhost:3000/api/" + path, None,
+                          { "Cookie": "_session_id=%s" % token })
+    try:
+        resp = urllib2.urlopen(req).read()
+    except urllib2.URLError, err:
+        if hasattr(err, "code"):
+            if err.code == 401:
+                exit_with_problem("authentication-failed",
+                                  "Token was not valid",
+                                  { "password": "not-tried", "token": "denied" })
+            elif err.code == 404:
+                exit_with_problem("access-denied",
+                                  "Host with id %s is not known" % args[1],
+                                  None)
+        raise
+    dbg("<= %s" % resp)
+    return json.loads(resp)
+
+# Main
+
+def main(args):
+    if len(args) != 2:
+        usage()
+
+    send_auth_challenge("*")
+    token = get_token_from_auth_data(read_auth_reply())
+    data = api_call("remote_execution/ssh_params?host_id=%s" % args[1], token)
+
+    user = "root"
+    if "ssh_user" in data:
+        user = data["ssh_user"]
+
+    if data.get("ssh_key_file", None):
+        send_auth_response("private-key " + open(data["ssh_key_file"]).read())
+
+    if data.get("ssh_key_passphrase", None):
+        send_auth_response("private-key-passphrase " + base64.b64encode(data["ssh_key_passphrase"]))
+
+    if data.get("ssh_password", None):
+        send_auth_response("Basic " + base64.b64encode("%s:%s" % (user, data["ssh_password"])))
+
+    os.environ["COCKPIT_SSH_ALLOW_UNKNOWN"] = "1"
+    os.execlpe("/home/mvo/work/cockpit/cockpit-ssh", "/home/mvo/work/cockpit/cockpit-ssh",
+               user + "@" + data["hostname"], os.environ)
+
+if __name__ == '__main__':
+    main(sys.argv)
