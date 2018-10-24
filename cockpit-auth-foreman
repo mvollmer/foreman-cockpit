@@ -13,6 +13,7 @@ import subprocess
 import urlparse
 import socket
 import select
+import email
 
 def dbg(str):
     sys.stderr.write(str + "\n")
@@ -121,24 +122,26 @@ def api_call(path, token):
 
 # Interactive SSH via the smart proxy
 
-def ssh_proxy(urlstr):
+def ssh_proxy(urlstr, params):
     url = urlparse.urlparse(urlstr)
     sock = socket.create_connection((url.hostname, url.port))
 
-    client_eof = False
-    sock_eof = False
-
-    inp_buf = "POST /bash HTTP/1.1\nConnection: upgrade\nUpgrade: raw\n\n"
+    data = json.dumps(params) + "\n"
+    inp_buf = "POST /remote_execution/ssh_session HTTP/1.1\nConnection: upgrade\nUpgrade: raw\nContent-Length: %s\n\n%s" % (len(data), data)
     out_buf = ""
 
+    ws_eof = False
+    bridge_eof = False
     expecting_http_header = True
+
+    status = ""
 
     while True:
         readers = [ ]
         writers = [ ]
-        if not client_eof:
+        if not ws_eof:
             readers.append(0)
-        if not sock_eof:
+        if not bridge_eof:
             readers.append(sock)
         if len(inp_buf) > 0:
             writers.append(sock)
@@ -146,49 +149,55 @@ def ssh_proxy(urlstr):
             if expecting_http_header:
                 header_end = out_buf.find("\r\n\r\n")
                 if header_end >= 0:
-                    header = out_buf[1:header_end]
+                    status_line, headers_text = out_buf[0:header_end].split("\r\n", 1)
+                    status = status_line.split(" ")[1]
                     out_buf = out_buf[header_end+4:]
                     expecting_http_header = False
-            else:
+                    if status != "101":
+                        headers = email.message_from_string(headers_text)
+                        expected_len = int(headers["Content-Length"])
+                        while len(out_buf) < expected_len:
+                            data = os.read(sock.fileno(), 4096)
+                            out_buf += data
+                            if data == "":
+                                break
+                        dbg("B %s" % out_buf)
+                        if status == "401":
+                            exit_with_problem("authentication-failed", out_buf, None)
+                        elif status[0] == "4":
+                            exit_with_problem("access-denied", out_buf, None)
+                        else:
+                            sys.stderr.write("Error talking to smart proxy: " + out_buf + "\n")
+                            sys.exit(1)
+            if len(out_buf) > 0:
                 writers.append(1)
         if len(readers) + len(writers) == 0:
-            dbg("done")
             break
         (r, w, x) = select.select(readers, writers, [ ])
         if sock in r:
             data = os.read(sock.fileno(), 4096)
-            # dbg("<-s %s" % data)
             out_buf += data
             if data == "":
-                # dbg("s eof")
-                sock_eof = True
+                bridge_eof = True
                 if out_buf == "":
-                    # dbg("c close")
-                    os.close(1)
+                    break
         if sock in w:
             n = os.write(sock.fileno(), inp_buf)
-            # dbg("->s %s" % n)
             inp_buf = inp_buf[n:]
-            if inp_buf == "" and client_eof:
-                # dbg("s close")
+            if inp_buf == "" and ws_eof:
                 sock.shutdown(socket.SHUT_WR);
         if 0 in r:
             data = os.read(0, 4096)
-            # dbg("<-c %s" % data)
             inp_buf += data
             if data == "":
-                # dbg("c eof")
-                client_eof = True
+                ws_eof = True
                 if inp_buf == "":
-                    # dbg("s close")
                     sock.shutdown(socket.SHUT_WR);
         if 1 in w:
-            n = os.write(1, out_buf) # XXX - catch EPIPE here
-            # dbg("->c %s" % n)
+            n = os.write(1, out_buf)
             out_buf = out_buf[n:]
-            if out_buf == "" and sock_eof:
-                # dbg("c close")
-                os.close(1)
+            if out_buf == "" and bridge_eof:
+                break
 
 # Main
 
@@ -198,9 +207,10 @@ def main(args):
 
     send_auth_challenge("*")
     token = get_token_from_auth_data(read_auth_reply())
-    data = api_call("remote_execution/ssh_params?host_id=%s" % args[1], token)
+    params = api_call("remote_execution/ssh_params?host_id=%s" % args[1], token)
 
-    ssh_proxy(data["proxy"])
+    params["command"] = "cockpit-bridge"
+    ssh_proxy(params["proxy"], params)
 
 if __name__ == '__main__':
     main(sys.argv)
