@@ -210,7 +210,12 @@ def main(args):
     params = api_call("remote_execution/ssh_params?host_id=%s" % args[1], token)
 
     params["command"] = "cockpit-bridge"
-    ssh_proxy(params["proxy"], params)
+    if params["proxy"] == "not_available":
+        exit_with_problem("access-denied", "Required proxy not available", None)
+    elif params["proxy"]:
+        ssh_proxy(params["proxy"], params)
+    else:
+        exit_with_problem("access-denied", "Can't make a direct SSH connection yet, sorry", None)
 
 if __name__ == '__main__':
     main(sys.argv)
