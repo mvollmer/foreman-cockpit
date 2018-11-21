@@ -1,0 +1,106 @@
+#!/usr/bin/env ruby
+
+require 'socket'
+require 'json'
+
+def dbg(str)
+    $stderr.write(str + "\n")
+end
+
+def ssh_proxy(urlstr, params)
+  url = URI(urlstr)
+  sock = TCPSocket.open(url.hostname, url.port)
+
+  data = JSON.dump(params) + "\n"
+  inp_buf = "POST /remote_execution/ssh_session HTTP/1.1\nConnection: upgrade\nUpgrade: raw\nContent-Length: #{data.length}\n\n#{data}"
+  out_buf = ""
+
+  ws_eof = false
+  bridge_eof = false
+  expecting_http_header = true
+
+  status = ""
+
+  while true
+    readers = [ ]
+    writers = [ ]
+
+    readers.append($stdin) unless ws_eof
+    readers.append(sock) unless bridge_eof
+    writers.append(sock) unless inp_buf == ""
+
+    if out_buf.length > 0
+      if expecting_http_header
+        header_end = out_buf.index("\r\n\r\n")
+        if header_end
+          status_line, headers_text = out_buf[0..header_end].split("\r\n", 2)
+          status = status_line.split(" ")[1]
+          out_buf = out_buf[header_end+4..-1]
+          expecting_http_header = false
+          if status != "101"
+            m = /^Content-Length:[ \t]*([0-9]+)\r?$/i.match(headers_text)
+            if m
+              expected_len = m[1].to_i
+            else
+              expected_len = -1
+            end
+            while expected_len < 0 || out_buf.length < expected_len
+              data = os.read(sock.fileno(), 4096)
+              break if data == ""
+              out_buf += data
+            end
+            if status == "401"
+              exit_with_problem("authentication-failed", out_buf, nil)
+            elsif status[0] == "4"
+              exit_with_problem("access-denied", out_buf, nil)
+            else
+              $stderr.write("Error talking to smart proxy: #{out_buf}\n")
+              exit 1
+            end
+          end
+        end
+      end
+      writers.append($stdout) unless out_buf == ""
+    end
+
+    break if readers.length + writers.length == 0
+
+    r, w, x = IO.select(readers, writers)
+
+    if r.include?(sock)
+      data = sock.readpartial(4096)
+      if !data
+        bridge_eof = True
+        break if out_buf == ""
+      else
+        out_buf += data
+      end
+    end
+
+    if w.include?(sock)
+      n = sock.write(inp_buf)
+      inp_buf = inp_buf[n..-1]
+      if inp_buf == "" and ws_eof
+        sock.close_write()
+      end
+    end
+
+    if r.include?($stdin)
+      data = $stdin.readpartial(4096)
+      inp_buf += data
+      if data == ""
+        ws_eof = True
+        sock.close_write() if inp_buf == ""
+      end
+    end
+
+    if w.include?($stdout)
+      n = $stdout.write(out_buf)
+      out_buf = out_buf[n..-1]
+      break if out_buf == "" and bridge_eof
+    end
+
+  end
+end
+
+ssh_proxy("http://dev.mvo.lan:8000", { command: "bash", hostname: "dev.mvo.lan", ssh_password: "foobar" })

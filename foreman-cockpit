@@ -18,7 +18,7 @@ LoginTitle = Foreman Cockpit
 Action = remote-login-ssh
 
 [SSH-Login]
-command = ./cockpit-auth-foreman
+command = ./foreman-cockpit-session
 
 [OAuth]
 Url = http://${master}/cockpit_redirect
