@@ -106,11 +106,11 @@ end
 
 def api_call(path, token)
   dbg("=> #{path}")
-  uri = URI('http://localhost:3000/api/' + path)
+  uri = URI('http://localhost:3000/api/v2/' + path)
   req = Net::HTTP::Get.new(uri)
   req["Cookie"] = "_session_id=#{token}"
   res = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(req) }
-  dbg("<= #{res.code} #{res.body}")
+  dbg("<= #{res.code} #{res.body[0,500]}")
   if res.code == "200"
     return JSON.parse(res.body)
   elsif res.code == "401"
@@ -239,9 +239,11 @@ def ssh_with_proxy(urlstr, params)
               expected_len = -1
             end
             while expected_len < 0 || out_buf.length < expected_len
-              data = os.read(sock.fileno(), 4096)
-              break if data == ""
-              out_buf += data
+              begin
+                out_buf += sock.readpartial(4096)
+              rescue EOFError
+                break
+              end
             end
             if status == "401"
               exit_with_problem("authentication-failed", out_buf, nil)
@@ -265,7 +267,7 @@ def ssh_with_proxy(urlstr, params)
       begin
         out_buf += sock.readpartial(4096)
       rescue EOFError
-        bridge_eof = True
+        bridge_eof = true
         break if out_buf == ""
       end
     end
@@ -283,7 +285,7 @@ def ssh_with_proxy(urlstr, params)
       begin
         inp_buf += $stdin.readpartial(4096)
       rescue EOFError
-        ws_eof = True
+        ws_eof = true
         sock.close_write() if inp_buf == ""
       end
     end
@@ -304,7 +306,7 @@ host = ARGV[0]
 
 send_auth_challenge("*")
 token = get_token_from_auth_data(read_auth_reply())
-params = api_call("remote_execution/ssh_params?host_id=#{host}", token)
+params = api_call("hosts/#{host}/ssh_params", token)
 
 if !params
   exit_with_problem("access-denied", "Host with id #{host} is not known", nil)
