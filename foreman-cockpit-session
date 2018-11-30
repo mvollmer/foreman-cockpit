@@ -309,13 +309,15 @@ token = get_token_from_auth_data(read_auth_reply())
 params = api_call("hosts/#{host}/ssh_params", token)
 
 if !params
-  exit_with_problem("access-denied", "Host with id #{host} is not known", nil)
+  exit_with_problem("access-denied", "Host #{host} is not known", nil)
 end
 
 params["command"] = "cockpit-bridge"
 if params["proxy"] == "not_available"
-  exit_with_problem("access-denied", "Required proxy not available", nil)
-elsif !params["proxy"] || params["proxy"] == "not_defined"
+  exit_with_problem("access-denied", "A proxy is required to reach #{host} but all of them are down", nil)
+elsif params["proxy"] == "not_defined"
+  exit_with_problem("access-denied", "A proxy is required to reach #{host} but none has been configured", nil)
+elsif params["proxy"] == "direct"
   ssh_without_proxy(params)
 else
   ssh_with_proxy(params["proxy"], params)
