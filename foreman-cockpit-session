@@ -205,8 +205,8 @@ def ssh_with_proxy(urlstr, params)
   url = URI(urlstr)
   sock = TCPSocket.open(url.hostname, url.port)
 
-  data = JSON.dump(params) + "\n"
-  inp_buf = "POST /remote_execution/ssh_session HTTP/1.1\nConnection: upgrade\nUpgrade: raw\nContent-Length: #{data.length}\n\n#{data}"
+  data = JSON.dump(params) + "\r\n"
+  inp_buf = "POST /remote_execution/ssh_session HTTP/1.1\r\nConnection: upgrade\r\nUpgrade: raw\r\nContent-Length: #{data.length}\r\n\r\n#{data}"
   out_buf = ""
 
   ws_eof = false
@@ -245,9 +245,7 @@ def ssh_with_proxy(urlstr, params)
                 break
               end
             end
-            if status == "401"
-              exit_with_problem("authentication-failed", out_buf, nil)
-            elsif status[0] == "4"
+            if status[0] == "4"
               exit_with_problem("access-denied", out_buf, nil)
             else
               $stderr.write("Error talking to smart proxy: #{out_buf}\n")

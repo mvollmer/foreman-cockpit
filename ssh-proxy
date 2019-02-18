@@ -11,8 +11,8 @@ def ssh_proxy(urlstr, params)
   url = URI(urlstr)
   sock = TCPSocket.open(url.hostname, url.port)
 
-  data = JSON.dump(params) + "\n"
-  inp_buf = "POST /remote_execution/ssh_session HTTP/1.1\nConnection: upgrade\nUpgrade: raw\nContent-Length: #{data.length}\n\n#{data}"
+  data = JSON.dump(params) + "\r\n"
+  inp_buf = "POST /remote_execution/ssh_session HTTP/1.1\r\nConnection: upgrade\r\nUpgrade: raw\r\nContent-Length: #{data.length}\r\n\r\n#{data}"
   out_buf = ""
 
   ws_eof = false
