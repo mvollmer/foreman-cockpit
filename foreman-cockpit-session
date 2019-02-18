@@ -202,7 +202,7 @@ def ssh_with_proxy(urlstr, params)
   sock = TCPSocket.open(url.hostname, url.port)
 
   data = JSON.dump(params) + "\r\n"
-  inp_buf = "POST /remote_execution/ssh_session HTTP/1.1\r\nConnection: upgrade\r\nUpgrade: raw\r\nContent-Length: #{data.length}\r\n\r\n#{data}"
+  inp_buf = "POST /ssh/session HTTP/1.1\r\nConnection: upgrade\r\nUpgrade: raw\r\nContent-Length: #{data.length}\r\n\r\n#{data}"
   out_buf = ""
 
   ws_eof = false
