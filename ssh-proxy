@@ -7,12 +7,18 @@ def dbg(str)
     $stderr.write(str + "\n")
 end
 
+def exit_with_problem(code, msg, unused)
+  dbg(code)
+  dbg(msg)
+  exit 1
+end
+
 def ssh_proxy(urlstr, params)
   url = URI(urlstr)
   sock = TCPSocket.open(url.hostname, url.port)
 
   data = JSON.dump(params) + "\r\n"
-  inp_buf = "POST /remote_execution/ssh_session HTTP/1.1\r\nConnection: upgrade\r\nUpgrade: raw\r\nContent-Length: #{data.length}\r\n\r\n#{data}"
+  inp_buf = "POST /ssh/session HTTP/1.1\r\nConnection: upgrade\r\nUpgrade: raw\r\nContent-Length: #{data.length}\r\n\r\n#{data}"
   out_buf = ""
 
   ws_eof = false
@@ -45,13 +51,13 @@ def ssh_proxy(urlstr, params)
               expected_len = -1
             end
             while expected_len < 0 || out_buf.length < expected_len
-              data = os.read(sock.fileno(), 4096)
-              break if data == ""
-              out_buf += data
+              begin
+                out_buf += sock.readpartial(4096)
+              rescue EOFError
+                break
+              end
             end
-            if status == "401"
-              exit_with_problem("authentication-failed", out_buf, nil)
-            elsif status[0] == "4"
+            if status[0] == "4"
               exit_with_problem("access-denied", out_buf, nil)
             else
               $stderr.write("Error talking to smart proxy: #{out_buf}\n")
@@ -68,12 +74,11 @@ def ssh_proxy(urlstr, params)
     r, w, x = IO.select(readers, writers)
 
     if r.include?(sock)
-      data = sock.readpartial(4096)
-      if !data
-        bridge_eof = True
+      begin
+        out_buf += sock.readpartial(4096)
+      rescue EOFError
+        bridge_eof = true
         break if out_buf == ""
-      else
-        out_buf += data
       end
     end
 
@@ -86,10 +91,10 @@ def ssh_proxy(urlstr, params)
     end
 
     if r.include?($stdin)
-      data = $stdin.readpartial(4096)
-      inp_buf += data
-      if data == ""
-        ws_eof = True
+      begin
+        inp_buf += $stdin.readpartial(4096)
+      rescue EOFError
+        ws_eof = true
         sock.close_write() if inp_buf == ""
       end
     end
@@ -103,4 +108,4 @@ def ssh_proxy(urlstr, params)
   end
 end
 
-ssh_proxy("http://dev.mvo.lan:8000", { command: "bash", hostname: "dev.mvo.lan", ssh_password: "foobar" })
+ssh_proxy("http://dev.mvo.lan:8000", { command: "bush", hostname: "dev.mvo.lan", ssh_password: "foobar" })
