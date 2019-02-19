@@ -15,7 +15,7 @@ Action = remote-login-ssh
 command = ./foreman-cockpit-session
 
 [OAuth]
-Url = /cockpit_redirect
+Url = /api/cockpit_redirect
 EOF
 
 if [ ! -d ./cockpit/ws-certs.d ]; then
