@@ -125,76 +125,6 @@ def api_call(path, token)
   end
 end
 
-# Direct SSH
-
-def ssh_without_proxy(params)
-  methods = %w(publickey)
-  methods.unshift('password') if params["ssh_password"]
-
-  ssh_options = { }
-  ssh_options[:port] = params["ssh_port"] if params["ssh_port"]
-  ssh_options[:keys] = [ params["ssh_key_file"] ] if params["ssh_key_file"]
-  ssh_options[:password] = params["ssh_password"] if params["ssh_password"]
-  ssh_options[:passphrase] = params[:ssh_key_passphrase] if params[:ssh_key_passphrase]
-  ssh_options[:keys_only] = true
-  ssh_options[:auth_methods] = methods
-  ssh_options[:verify_host_key] = :accept_new_or_local_tunnel
-  # ssh_options[:user_known_hosts_file] = @known_hosts_file if @known_hosts_file
-  # ssh_options[:user_known_hosts_file] = prepare_known_hosts if @host_public_key
-  ssh_options[:number_of_password_prompts] = 1
-
-  started = false
-  err_buf = ""
-  begin
-    Net::SSH.start(params["hostname"], params["ssh_user"], ssh_options) do |ssh|
-      channel = ssh.open_channel do |ch|
-        ch.exec(params["command"]) do |ch, success|
-          exit_with_problem("access-denied", "Cockpit not installed", nil) unless success
-
-          ssh.listen_to($stdin) do
-            begin
-              ch.send_data($stdin.readpartial(4096))
-            rescue EOFError
-              ch.close()
-            end
-          end
-
-          ch.on_data do |ch2, data|
-            # XXX - This might block since we don't select $stdout for writability.
-            while data != ""
-              n = $stdout.write(data)
-              data = data[n..-1]
-            end
-            $stdout.flush()
-          end
-
-          ch.on_request('exit-status') do |ch, data|
-            dbg("EX #{data.read_long}\n")
-            ch.close
-          end
-
-          channel.on_request('exit-signal') do |ch, data|
-            dbg("SIG #{data.read_string}\n")
-            ch.close
-          end
-
-          ch.on_extended_data do |ch2, type, data|
-            dbg("#{type}: #{data}\n")
-            err_buf += data
-          end
-        end
-      end
-
-      channel.wait
-      if not started
-        exit_with_problem("access-denied", err_buf, nil)
-      end
-    end
-  rescue Net::SSH::AuthenticationFailed => e
-    exit_with_problem("access-denied", e.message, nil)
-  end
-end
-
 # SSH via the smart proxy
 
 def ssh_with_proxy(urlstr, params)
@@ -312,7 +242,7 @@ if params["proxy"] == "not_available"
 elsif params["proxy"] == "not_defined"
   exit_with_problem("access-denied", "A proxy is required to reach #{host} but none has been configured", nil)
 elsif params["proxy"] == "direct"
-  ssh_without_proxy(params)
+  exit_with_problem("access-denied", "Web console sessions require a proxy but none has been configured", nil)
 else
   ssh_with_proxy(params["proxy"], params)
 end
