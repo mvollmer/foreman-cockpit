@@ -106,7 +106,7 @@ end
 
 def api_call(path, token)
   dbg("=> #{path}")
-  uri = URI('http://localhost:3000/api/v2/' + path)
+  uri = URI('http://localhost:3000/' + path)
   req = Net::HTTP::Get.new(uri)
   req["Cookie"] = "_session_id=#{token}"
   res = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(req) }
@@ -230,7 +230,7 @@ host = ARGV[0]
 
 send_auth_challenge("*")
 token = get_token_from_auth_data(read_auth_reply())
-params = api_call("hosts/#{host}/ssh_params", token)
+params = api_call("cockpit/host_ssh_params/#{host}", token)
 
 if !params
   exit_with_problem("access-denied", "Host #{host} is not known", nil)
