@@ -2,7 +2,6 @@
 
 require "json"
 require "net/http"
-require "net/ssh"
 
 def dbg(str)
     $stderr.write(str + "\n")
@@ -116,7 +115,7 @@ def api_call(path, token)
   elsif res.code == "401"
     exit_with_problem("authentication-failed",
                       "Token was not valid",
-                      { "password": "not-tried", "token": "denied" })
+                      { "password" => "not-tried", "token" => "denied" })
   elsif res.code == "404"
     return nil
   else
