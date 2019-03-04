@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 
 require "json"
-require "net/http"
+require "net/https"
 
 def dbg(str)
     $stderr.write(str + "\n")
@@ -108,7 +108,7 @@ def api_call(path, token)
   uri = URI('http://localhost:3000/' + path)
   req = Net::HTTP::Get.new(uri)
   req["Cookie"] = "_session_id=#{token}"
-  res = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(req) }
+  res = Net::HTTP.start(uri.hostname, uri.port, :use_ssl => true, :verify_mode => OpenSSL::SSL::VERIFY_NONE) { |http| http.request(req) }
   dbg("<= #{res.code} #{res.body[0,500]}")
   if res.code == "200"
     return JSON.parse(res.body)
