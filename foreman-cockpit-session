@@ -97,18 +97,23 @@ def exit_with_problem(problem, message, auth_methods)
     exit 1
 end
 
-# Talking to the Foreman API
+# Talking to Foreman
 
 def get_token_from_auth_data(auth_data)
   auth_data.split(" ")[1]
 end
 
-def api_call(path, token)
-  dbg("=> #{path}")
-  uri = URI('https://localhost/' + path)
+def foreman_call(path, token)
+  foreman = ENV["FOREMAN_URL"] || "https://localhost/"
+  dbg("=> #{foreman}#{path}")
+  uri = URI(foreman + path)
   req = Net::HTTP::Get.new(uri)
   req["Cookie"] = "_session_id=#{token}"
-  res = Net::HTTP.start(uri.hostname, uri.port, :use_ssl => true, :verify_mode => OpenSSL::SSL::VERIFY_NONE) { |http| http.request(req) }
+  res = Net::HTTP.start(uri.hostname, uri.port,
+                        :use_ssl => uri.scheme == "https", :verify_mode => OpenSSL::SSL::VERIFY_NONE) {
+    |http| http.request(req)
+  }
+
   dbg("<= #{res.code} #{res.body[0,500]}")
   if res.code == "200"
     return JSON.parse(res.body)
@@ -240,7 +245,7 @@ host = ARGV[0]
 
 send_auth_challenge("*")
 token = get_token_from_auth_data(read_auth_reply())
-params = api_call("cockpit/host_ssh_params/#{host}", token)
+params = foreman_call("cockpit/host_ssh_params/#{host}", token)
 
 if !params
   exit_with_problem("access-denied", "Host #{host} is not known", nil)
