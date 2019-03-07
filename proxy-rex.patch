@@ -1,26 +1,59 @@
+diff --git a/lib/smart_proxy_remote_execution_ssh.rb b/lib/smart_proxy_remote_execution_ssh.rb
+index ee048ba..8b76ab0 100644
+--- a/lib/smart_proxy_remote_execution_ssh.rb
++++ b/lib/smart_proxy_remote_execution_ssh.rb
+@@ -1,3 +1,4 @@
+ require 'smart_proxy_remote_execution_ssh/version'
+ require 'smart_proxy_dynflow'
++require 'smart_proxy_remote_execution_ssh/webrick_ext'
+ require 'smart_proxy_remote_execution_ssh/plugin'
+
+ module Proxy::RemoteExecution
 diff --git a/lib/smart_proxy_remote_execution_ssh/api.rb b/lib/smart_proxy_remote_execution_ssh/api.rb
-index 9211f19..3cb1f95 100644
+index 9211f19..92f233b 100644
 --- a/lib/smart_proxy_remote_execution_ssh/api.rb
 +++ b/lib/smart_proxy_remote_execution_ssh/api.rb
-@@ -4,6 +4,98 @@ module Proxy::RemoteExecution
+@@ -1,9 +1,157 @@
++require 'net/ssh'
++
++# When hijacking the socket of a TLS connection with Puma, we get a
++# Puma::MiniSSL::Socket, which isn't really a Socket.  We need to add
++# recv and send for the benefit of the Net::SSH::BufferedIo mixin, and
++# closed? for our own convenience.
++
++module Puma
++  module MiniSSL
++    class Socket
++      def closed?
++        @socket.closed?
++      end
++      def recv(n)
++        readpartial(n)
++      end
++      def send(mesg, flags)
++        write(mesg)
++      end
++    end
++  end
++end
++
+ module Proxy::RemoteExecution
+   module Ssh
+     class Api < ::Sinatra::Base
++      include Sinatra::Authorization::Helpers
++
        get "/pubkey" do
          File.read(Ssh.public_key_file)
        end
++
 +      post "/session" do
++        # do_authorize
 +        if env["HTTP_CONNECTION"] != "upgrade" or env["HTTP_UPGRADE"] != "raw"
-+          return [ 401, "Invalid request: /ssh/session requires connection upgrade to 'raw'" ]
-+        end
-+        socket = nil
-+        if env['rack.hijack?']
-+          env['rack.hijack'].call
-+          socket = env['rack.hijack_io']
-+        end
-+        if !socket
-+          return [ 501, "Internal error: request hijacking not available" ]
++          return [ 400, "Invalid request: /ssh/session requires connection upgrade to 'raw'" ]
 +        end
 +
 +        params = MultiJson.load(env["rack.input"].read)
-+        key_file = ForemanRemoteExecutionCore.settings.fetch(:ssh_identity_key_file)
++        key_file = Proxy::RemoteExecution::Ssh.private_key_file
 +
 +        methods = %w(publickey)
 +        methods.unshift('password') if params["ssh_password"]
@@ -32,8 +65,22 @@ index 9211f19..3cb1f95 100644
 +        ssh_options[:passphrase] = params[:ssh_key_passphrase] if params[:ssh_key_passphrase]
 +        ssh_options[:keys_only] = true
 +        ssh_options[:auth_methods] = methods
-+        ssh_options[:verify_host_key] = :accept_new_or_local_tunnel
++        ssh_options[:verify_host_key] = true
 +        ssh_options[:number_of_password_prompts] = 1
++
++        socket = nil
++        if env['WEBRICK_SOCKET']
++          socket = env['WEBRICK_SOCKET']
++        elsif env['rack.hijack?']
++          begin
++            env['rack.hijack'].call
++          rescue NotImplementedError
++          end
++          socket = env['rack.hijack_io']
++        end
++        if !socket
++          return [ 501, "Internal error: request hijacking not available" ]
++        end
 +
 +        ssh_on_socket(socket, params["command"], params["ssh_user"], params["hostname"], ssh_options)
 +        101
@@ -42,13 +89,31 @@ index 9211f19..3cb1f95 100644
 +      def ssh_on_socket(socket, command, ssh_user, host, ssh_options)
 +        started = false
 +        err_buf = ""
++        socket.extend(Net::SSH::BufferedIo)
++
++        send_start = -> {
++          if !started
++            started = true
++            socket.enqueue("Status: 101\r\n")
++            socket.enqueue("Connection: upgrade\r\n")
++            socket.enqueue("Upgrade: raw\r\n")
++            socket.enqueue("\r\n")
++          end
++        }
++
++        send_error = -> (code, msg) {
++          socket.enqueue("Status: #{code}\r\n")
++          socket.enqueue("Connection: close\r\n")
++          socket.enqueue("\r\n")
++          socket.enqueue(msg)
++        }
++
 +        begin
 +          Net::SSH.start(host, ssh_user, ssh_options) do |ssh|
 +            channel = ssh.open_channel do |ch|
 +              ch.exec(command) do |ch, success|
 +                raise "could not execute command" unless success
 +
-+                socket.extend(Net::SSH::BufferedIo)
 +                ssh.listen_to(socket)
 +
 +                ch.on_process do
@@ -61,21 +126,21 @@ index 9211f19..3cb1f95 100644
 +                end
 +
 +                ch.on_data do |ch2, data|
-+                  if !started
-+                    started = true
-+                    socket.enqueue("Status: 101\r\n")
-+                    socket.enqueue("Connection: upgrade\r\n")
-+                    socket.enqueue("Upgrade: raw\r\n")
-+                    socket.enqueue("\r\n")
-+                  end
++                  send_start.call
 +                  socket.enqueue(data)
 +                end
 +
 +                ch.on_request('exit-status') do |ch, data|
++                  code = data.read_long
++                  if code == 0
++                    send_start.call
++                  end
++                  err_buf += "Process exited with code #{code}.\r\n"
 +                  ch.close
 +                end
 +
 +                channel.on_request('exit-signal') do |ch, data|
++                  err_buf += "Process was terminated with signal #{data.read_string}.\r\n"
 +                  ch.close
 +                end
 +
@@ -87,17 +152,39 @@ index 9211f19..3cb1f95 100644
 +
 +            channel.wait
 +            if !started
-+              socket.enqueue("Status: 400\r\n")
-+              socket.enqueue("Connection: close\r\n")
-+              socket.enqueue("\r\n")
-+              socket.enqueue(err_buf)
-+              socket.wait_for_pending_sends
-+              socket.close
++              send_error.call(400, err_buf)
 +            end
 +          end
++        rescue Net::SSH::AuthenticationFailed => e
++          send_error.call(401, e.message)
++        rescue Exception => e
++          logger.error e.message
++          e.backtrace.each { |line| logger.debug line }
++          send_error.call(500, "Internal error")
++        end
++        if not socket.closed?
++          socket.wait_for_pending_sends
++          socket.close
 +        end
 +      end
 +
      end
    end
  end
+diff --git a/lib/smart_proxy_remote_execution_ssh/webrick_ext.rb b/lib/smart_proxy_remote_execution_ssh/webrick_ext.rb
+new file mode 100644
+index 0000000..8ec00c8
+--- /dev/null
++++ b/lib/smart_proxy_remote_execution_ssh/webrick_ext.rb
+@@ -0,0 +1,11 @@
++module SmartProxyRemoteExecutionSsh
++  module WEBrickExt
++    # An extension to ::WEBrick::HTTPRequest to expost the socket object for highjacking for cockpit
++    module HTTPRequestExt
++      def meta_vars
++        super.merge('WEBRICK_SOCKET' => @socket)
++      end
++    end
++  end
++  ::WEBrick::HTTPRequest.send(:prepend, WEBrickExt::HTTPRequestExt)
++end
