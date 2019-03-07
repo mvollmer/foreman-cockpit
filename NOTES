@@ -1,0 +1,26 @@
+- set proper hostname
+- make DNS lookup work for it
+- forman-install ...
+- enable mod_proxy
+- put ProxyPass / Rewrite things into place
+- setenforce 0
+- apply rex.patch, proxy.patch, proxy-rex.patch
+- install foreman-cockpit-session
+- restart httpd
+- install ruby-devel openssl-devel
+- gem install net-ssh --version 4.2
+- switch proxy to http
+- restart proxy
+- install cockpit.conf
+- start foreman-cockpit
+
+TODO
+
+- add Origins
+- try webrick https
+- write up instructions and test them (with https if that works, otherwise with http)
+
+- debug ssl misbehavior between f-c-session and proxy.
+  MiniSSL::Socket probably can't be used with Net:SSH just like that.
+  Custom event loop?
+- figure out setenforce 1
