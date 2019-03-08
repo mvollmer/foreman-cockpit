@@ -47,7 +47,7 @@ index 9211f19..92f233b 100644
        end
 +
 +      post "/session" do
-+        # do_authorize
++        do_authorize_any
 +        if env["HTTP_CONNECTION"] != "upgrade" or env["HTTP_UPGRADE"] != "raw"
 +          return [ 400, "Invalid request: /ssh/session requires connection upgrade to 'raw'" ]
 +        end
