@@ -17,10 +17,13 @@
 TODO
 
 - add Origins
-- try webrick https
-- write up instructions and test them (with https if that works, otherwise with http)
+- write up instructions for http
 
 - debug ssl misbehavior between f-c-session and proxy.
   MiniSSL::Socket probably can't be used with Net:SSH just like that.
-  Custom event loop?
+  Custom event loop?  What happens with webrick?
+- client certificates
 - figure out setenforce 1
+
+Cockpit:
+- logout leaves access token visible
