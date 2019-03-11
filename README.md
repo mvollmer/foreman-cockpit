@@ -23,7 +23,7 @@ from this:
     http://isoredirect.centos.org/centos/7/isos/x86_64/CentOS-7-x86_64-Minimal-1810.iso
 
 In the installer, make sure that Network is switched on.  Also in the
-installer, set the hostname of the new machine to "foreman.devel.lan".
+installer, set the hostname of the new machine to "foreman.demo.lan".
 
 Make sure that reverse DNS lookup gives consistent results inside the
 virtual machine.  One easy way is to add a line like this to
