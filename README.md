@@ -1,12 +1,12 @@
-# Integrating Foreman and Cockpit
+# Integrating Satellite and Cockpit
 
-There is work in progress to integrate Cockpit into Foreman.
+There is work in progress to integrate Cockpit into Satellite.
 Eventually, setting this up should be trivial but until it's all
 wrapped up and shipped -- it's complicated.
 
 The following instructions will set up a single new virtual machine
-that runs Foreman and you can seamlessly open Cockpit from Foreman for
-that same virtual machine.
+that runs Satellite and you can seamlessly open Cockpit from Satellite
+for that same virtual machine.
 
 Current issues:
 
@@ -17,28 +17,28 @@ Current issues:
 
 ## Setting up the virtual machine
 
-Create a new Centos 7 virtual machine with 4GiB RAM and 10GiB disk
-from this:
+Create a new RHEL 7.6 virtual machine with 8GiB RAM and 10GiB disk
+from this, for example:
 
-    http://isoredirect.centos.org/centos/7/isos/x86_64/CentOS-7-x86_64-Minimal-1810.iso
+    https://access.redhat.com/downloads/content/69/ver=/rhel---7/7.6/x86_64/product-software
 
 In the installer, make sure that Network is switched on.  Also in the
-installer, set the hostname of the new machine to "foreman.demo.lan".
+installer, set the hostname of the new machine to "satellite.demo.lan".
 
 Make sure that reverse DNS lookup gives consistent results inside the
 virtual machine.  One easy way is to add a line like this to
 `/etc/hosts` on the virtual machine itself:
 
 ```
-192.168.100.109 foreman.demo.lan foreman
+192.168.100.150 satellite.demo.lan satellite
 ```
 
 Make sure to use the real IP address of the virtual machine, of
 course.
 
 Make sure that the new virtual machine can also be reached via its
-"foreman.demo.lan" name from the outside.  Again, a easy way is to add
-a line like above to `/etc/hosts` on the machine that will run the
+"satllite.demo.lan" name from the outside.  Again, a easy way is to
+add a line like above to `/etc/hosts` on the machine that will run the
 browser.
 
 Switch off SELinux permanently:
@@ -48,22 +48,28 @@ Switch off SELinux permanently:
 # echo "SELINUX=permissive" >/etc/selinux/config
 ```
 
-## Installing Foreman
+## Installing Satellite
 
-To install Foreman, you need to add a couple of RPM repositories,
-install `foreman-installer`, and then run it.
-
-More information here: https://theforeman.org/manuals/1.21/index.html#3.InstallingForeman
+To install Satellite, you need to subscribe to a couple of RPM repositories,
+install `satellite`, and then run its installer.
 
 ```
-# yum install https://yum.puppetlabs.com/puppet5/puppet5-release-el-7.noarch.rpm
-# yum install http://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
-# yum install https://yum.theforeman.org/releases/1.21/el7/x86_64/foreman-release.rpm
+# subscription-manager register
+# subscription-manager list --available --matches 'Red Hat Satellite 6 Beta'
+```
+
+Pick one of the pools and attach to it.
+
+```
+# subscription-manager attach --pool=<pool_id>
+# subscription-manager repos --disable "*"
+# subscription-manager repos --enable=rhel-7-server-rpms --enable=rhel-server-rhscl-7-rpms --enable=rhel-server-7-satellite-6-beta-rpms --enable=rhel-7-server-satellite-maintenance-6-beta-rpms --enable=rhel-7-server-ansible-2.6-rpms
+# subscription-manager release --unset
 
 # yum update
-# yum install foreman-installer
+# yum install satellite
 
-# foreman-installer --enable-foreman-plugin-remote-execution --enable-foreman-proxy-plugin-remote-execution-ssh
+# satellite-installer --enable-foreman-plugin-remote-execution --enable-foreman-proxy-plugin-remote-execution-ssh
 
 # firewall-cmd --add-service https
 # firewall-cmd --add-service https --permanent
@@ -73,26 +79,23 @@ Write down the admin password that the installer outputs.
 
 ## Patching Foreman
 
-The Cockpit integration into Foreman is done as part of the "Remote
-Execution" plugin.  That plugin comes in two parts: one for Foreman
-itself, one for the Smart Proxy.  We also need to update the Smart
-Proxy itself.
+The Cockpit integration into Satellite is done as part of the "Remote
+Execution" plugin of Foreman.  That plugin comes in two parts: one for
+Foreman itself, and one for the Smart Proxy ("Capsule" in Satellingo,
+but we will keep calling it a proxy here).
 
-So we need three patches, and some more gems to satisfy their
+So we need two patches, and some more gems to satisfy their
 dependencies:
 
 ```
 # yum install patch
 # gem install net-ssh --version 4.2
 
-# cd /opt/theforeman/tfm/root/usr/share/gems/gems/foreman_remote_execution-1.7.0/
-# curl https://raw.githubusercontent.com/mvollmer/foreman-cockpit/master/rex.patch | patch -p1
+# cd /opt/theforeman/tfm/root/usr/share/gems/gems/foreman_remote_execution-1.6.7/
+# curl https://raw.githubusercontent.com/mvollmer/foreman-cockpit/satellite/rex.patch | patch -p1
 
 # cd /usr/share/gems/gems/smart_proxy_remote_execution_ssh-0.2.0/
-# curl https://raw.githubusercontent.com/mvollmer/foreman-cockpit/master/proxy-rex.patch | patch -p1
-
-# cd /usr/share/foreman-proxy/
-# curl https://raw.githubusercontent.com/mvollmer/foreman-cockpit/master/proxy.patch | patch -p1
+# curl https://raw.githubusercontent.com/mvollmer/foreman-cockpit/satellite/proxy-rex.patch | patch -p1
 
 # systemctl restart httpd
 # systemctl restart foreman-proxy
@@ -100,7 +103,7 @@ dependencies:
 
 ## Setting up Cockpit
 
-We will configure a special Cockpit instance just for Foreman, so we
+We will configure a special Cockpit instance just for Satellite, so we
 need to install Cockpit.
 
 ```
@@ -108,7 +111,7 @@ need to install Cockpit.
 ```
 
 [ More precisely, we only need to install "cockpit-ws" on the machine
-  where Foreman was installed, and on the machines that we want to
+  where Satellite was installed, and on the machines that we want to
   access via Cockpit, we need to install whatever bits of Cockpit we
   actually want, but not "cockpit-ws".
 ]
@@ -121,7 +124,7 @@ This is the configuration for Cockpit itself:
 [WebService]
 LoginTitle = Foreman Cockpit
 UrlRoot = /webcon/
-Origins = https://foreman.demo.lan
+Origins = https://satellite.demo.lan
 
 [Bearer]
 Action = remote-login-ssh
@@ -140,7 +143,7 @@ right name there.
 Also install the session helper:
 ```
 # cd /usr/libexec/
-# curl https://raw.githubusercontent.com/mvollmer/foreman-cockpit/master/foreman-cockpit-session >foreman-cockpit-session
+# curl https://raw.githubusercontent.com/mvollmer/foreman-cockpit/satellite/foreman-cockpit-session >foreman-cockpit-session
 # chmod a+x foreman-cockpit-session
 ```
 
@@ -165,13 +168,11 @@ WantedBy=multi-user.target
 ]
 
 This instance of Cockpit is configured to be served by a reverse
-proxy.  Thus, we need to enable `mod_proxy`.
+proxy.  We also need to enable `mod_proxy_wstunnel`.
 
 ```
-# cat >/etc/httpd/conf.modules.d/proxy.load
-LoadModule proxy_module modules/mod_proxy.so
+# cat >/etc/httpd/conf.modules.d/proxy_wstunnel.load
 LoadModule proxy_wstunnel_module modules/mod_proxy_wstunnel.so
-LoadModule proxy_http_module modules/mod_proxy_http.so
 ```
 
 ```
@@ -193,18 +194,11 @@ Restart and enable as needed.
 # systemctl restart httpd
 ```
 
-## Configuring Foreman
+## Configuring Satellite
 
-Open `https://foreman.demo.lan` in a browser, accept the self-signed
+Open `https://satellite.demo.lan` in a browser, accept the self-signed
 certificate, and log in with the credentials given to you by the
 installer.
-
-If you don't have those credentials anymore, you can get new ones with
-this command:
-
-```
-# foreman-rake permissions:reset
-```
 
 The installer has already entered the virtual machine and the smart
 proxy into the database.  However, they might or might not be fully
@@ -217,7 +211,7 @@ are both in the "Default Organization" and "Default Location".
 ]
 
 The Cockpit webserver will need to talk to the smart proxy, but this
-doesn't work yet for https.  We need to configure the Smart Proxy and
+doesn't work yet for https.  We need to configure the smart proxy and
 its plugins to also allow connections with http.
 
 ```
@@ -227,9 +221,10 @@ its plugins to also allow connections with http.
 # systemctl restart foreman-proxy
 ```
 
-Then edit the foreman.demo.lan smart proxy and change its URL to
-"http://foreman.demo.lan:8000".  Click the "Refresh features" button
-to see whether it still works.
+Then edit the satellite.demo.lan smart proxy and change its URL to
+"http://satellite.demo.lan:8000".  Note that you need to change the
+port and to change from "https://" to "http://".  Click the "Refresh
+features" button to see whether it still works.
 
 Then go to "Administer / Settings / RemoteExecution" and change
 "Cockpit URL" to `/webcon/=%{host}`.
@@ -243,8 +238,8 @@ The last thing is to allow the remote execution plugin to log into the
 virtual machine without password:
 
 ```
-# ssh-copy-id -i ~foreman-proxy/.ssh/id_rsa_foreman_proxy root@foreman.demo.lan
+# ssh-copy-id -i ~foreman-proxy/.ssh/id_rsa_foreman_proxy root@satellite.demo.lan
 ```
 
-Now you can go to the page for the foreman.demo.lan host itself.  You
-should see the "Web Console" button, and it should work.
+Now you can go to the Satellite page for the satellite.demo.lan host
+itself.  You should see the "Web Console" button, and it should work.
