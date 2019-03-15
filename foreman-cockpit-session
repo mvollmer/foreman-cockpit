@@ -131,14 +131,13 @@ end
 
 # SSH via the smart proxy
 
-def ssh_with_proxy(urlstr, params)
-  url = URI(urlstr)
+def ssh_with_proxy(proxy, params)
+  url = URI(proxy["url"])
   raw_sock = TCPSocket.open(url.hostname, url.port)
   if url.scheme == 'https'
     ssl_context = OpenSSL::SSL::SSLContext.new()
-    ssl_context.cert = OpenSSL::X509::Certificate.new(File.open("/home/mvo/work/smart-proxy/ssl/certs/dev.mvo.lan.pem"))
-    ssl_context.key = OpenSSL::PKey::RSA.new(File.open("/home/mvo/work/smart-proxy/ssl/private_keys/dev.mvo.lan.pem"))
-    # ssl_context.ssl_version = :SSLv23
+    ssl_context.cert = OpenSSL::X509::Certificate.new(proxy["ssl_certificate"])
+    ssl_context.key = OpenSSL::PKey.read(proxy["ssl_priv_key"])
     sock = OpenSSL::SSL::SSLSocket.new(raw_sock, ssl_context)
     sock.sync_close = true
     sock.connect
