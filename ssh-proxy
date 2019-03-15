@@ -20,8 +20,8 @@ def ssh_proxy(urlstr, params)
   raw_sock = TCPSocket.open(url.hostname, url.port)
   if url.scheme == 'https'
     ssl_context = OpenSSL::SSL::SSLContext.new()
-    # ssl_context.cert = OpenSSL::X509::Certificate.new(File.open("certificate.crt"))
-    # ssl_context.key = OpenSSL::PKey::RSA.new(File.open("certificate.key"))
+    ssl_context.cert = OpenSSL::X509::Certificate.new(File.open("/home/mvo/work/smart-proxy/ssl/certs/dev.mvo.lan.pem"))
+    ssl_context.key = OpenSSL::PKey::RSA.new(File.open("/home/mvo/work/smart-proxy/ssl/private_keys/dev.mvo.lan.pem"))
     # ssl_context.ssl_version = :SSLv23
     sock = OpenSSL::SSL::SSLSocket.new(raw_sock, ssl_context)
     sock.sync_close = true
@@ -84,28 +84,50 @@ def ssh_proxy(urlstr, params)
 
     break if readers.length + writers.length == 0
 
+    dbg("S #{readers.length} #{writers.length}")
     r, w, x = IO.select(readers, writers)
 
     if r.include?(sock)
       begin
-        out_buf += sock.readpartial(4096)
+        dbg("sock read")
+        out_buf += sock.read_nonblock(4096)
+        dbg("<-sock #{out_buf}")
       rescue EOFError
         bridge_eof = true
         break if out_buf == ""
+      rescue IO::WaitReadable
+        # This is fine.
+      rescue IO::WaitWriteable
+        # This might happen with SSL during a renogiation.  Block a
+        # bit to get it over with.
+        IO.select(nil, [sock])
+        retry
       end
     end
 
     if w.include?(sock)
-      n = sock.write(inp_buf)
-      inp_buf = inp_buf[n..-1]
-      if inp_buf == "" and ws_eof
-        raw_sock.close_write()
+      begin
+        dbg("sock write")
+        n = sock.write_nonblock(inp_buf)
+        dbg("sock-> #{inp_buf[0..n]}")
+        inp_buf = inp_buf[n..-1]
+        if inp_buf == "" and ws_eof
+          raw_sock.close_write()
+        end
+      rescue IO::WaitWritable
+        # This is fine
+      rescue IO::WaitReadable
+        # This might happen with SSL during a renogiation.  Block a
+        # bit to get it over with.
+        IO.select([sock])
+        retry
       end
     end
 
     if r.include?($stdin)
       begin
         inp_buf += $stdin.readpartial(4096)
+        # dbg("<= #{inp_buf}")
       rescue EOFError
         ws_eof = true
         raw_sock.close_write() if inp_buf == ""
@@ -114,6 +136,7 @@ def ssh_proxy(urlstr, params)
 
     if w.include?($stdout)
       n = $stdout.write(out_buf)
+      # dbg("=> #{out_buf[0..n]}")
       out_buf = out_buf[n..-1]
       break if out_buf == "" and bridge_eof
     end
@@ -123,4 +146,4 @@ end
 
 #ssh_proxy("https://man.mvo.lan:8443", { command: "hostname", hostname: "man.mvo.lan", ssh_user: "root",
 #                                        ssh_password: "foobar" })
-ssh_proxy("http://dev.mvo.lan:8000", { command: "bash", hostname: "dev.mvo.lan", ssh_user: "root", ssh_password: "foobar" })
+ssh_proxy("https://dev.mvo.lan:8443", { command: "bash", hostname: "dev.mvo.lan", ssh_user: "root", ssh_password: "foobar" })
