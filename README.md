@@ -8,6 +8,10 @@ The following instructions will set up a single new virtual machine
 that runs Foreman and you can seamlessly open Cockpit from Foreman for
 that same virtual machine.
 
+Current issues:
+
+ - SELinux needs to be switched off.
+
 ## Setting up the virtual machine
 
 Create a new Centos 7 virtual machine with 4GiB RAM and 10GiB disk
@@ -33,6 +37,13 @@ Make sure that the new virtual machine can also be reached via its
 "foreman.demo.lan" name from the outside.  Again, a easy way is to add
 a line like above to `/etc/hosts` on the machine that will run the
 browser.
+
+Switch off SELinux permanently:
+
+```
+# setenforce 0
+# echo "SELINUX=permissive" >/etc/selinux/config
+```
 
 ## Installing Foreman
 
