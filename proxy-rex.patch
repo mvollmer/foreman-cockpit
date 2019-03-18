@@ -13,7 +13,7 @@ diff --git a/lib/smart_proxy_remote_execution_ssh/api.rb b/lib/smart_proxy_remot
 index 9211f19..1a41bcc 100644
 --- a/lib/smart_proxy_remote_execution_ssh/api.rb
 +++ b/lib/smart_proxy_remote_execution_ssh/api.rb
-@@ -1,9 +1,195 @@
+@@ -1,9 +1,192 @@
 +require 'net/ssh'
 +
 +# When hijacking the socket of a TLS connection with Puma, we get a
@@ -78,14 +78,11 @@ index 9211f19..1a41bcc 100644
  module Proxy::RemoteExecution
    module Ssh
      class Api < ::Sinatra::Base
-+      include Sinatra::Authorization::Helpers
-+
        get "/pubkey" do
          File.read(Ssh.public_key_file)
        end
 +
 +      post "/session" do
-+        do_authorize_any
 +        if env["HTTP_CONNECTION"] != "upgrade" or env["HTTP_UPGRADE"] != "raw"
 +          return [ 400, "Invalid request: /ssh/session requires connection upgrade to 'raw'" ]
 +        end

@@ -61,10 +61,9 @@ Write down the admin password that the installer outputs.
 
 The Cockpit integration into Foreman is done as part of the "Remote
 Execution" plugin.  That plugin comes in two parts: one for Foreman
-itself, one for the Smart Proxy.  We also need to update the Smart
-Proxy itself.
+itself, one for the Smart Proxy.
 
-So we need three patches, and some more gems to satisfy their
+So we need two patches, and one more gem to satisfy their
 dependencies:
 
 ```
@@ -76,9 +75,6 @@ dependencies:
 
 # cd /usr/share/gems/gems/smart_proxy_remote_execution_ssh-0.2.0/
 # curl https://raw.githubusercontent.com/mvollmer/foreman-cockpit/master/proxy-rex.patch | patch -p1
-
-# cd /usr/share/foreman-proxy/
-# curl https://raw.githubusercontent.com/mvollmer/foreman-cockpit/master/proxy.patch | patch -p1
 
 # systemctl restart httpd
 # systemctl restart foreman-proxy
