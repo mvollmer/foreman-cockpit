@@ -14,16 +14,6 @@
 - install cockpit.conf
 - start foreman-cockpit
 
-TODO
-
-- add Origins
-- write up instructions for http
-
-- debug ssl misbehavior between f-c-session and proxy.
-  MiniSSL::Socket probably can't be used with Net:SSH just like that.
-  Custom event loop?  What happens with webrick?
-- client certificates
-- figure out setenforce 1
-
 Cockpit:
-- logout leaves access token visible
+- '@' etc in error messages is escaped
+- logout sometimes leaves access token visible
