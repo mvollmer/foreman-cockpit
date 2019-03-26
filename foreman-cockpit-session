@@ -4,7 +4,7 @@ require "json"
 require "net/https"
 
 def dbg(str)
-    $stderr.write(str + "\n")
+  $stderr.write(str + "\n")
 end
 
 # Cockpit protocol, encoding and decoding of control messages.
@@ -16,47 +16,11 @@ def send_control(msg)
   $stdout.flush
 end
 
-def read_size(io)
-  size = 0
-  seen = 0
-
-  while seen < 8
-    t = io.readpartial(1)
-
-    unless t
-      return 0
-    end
-
-    if t == "\n"
-      break
-    end
-
-    if t.to_i.zero? && t != "0"
-      raise ArgumentError("Invalid frame: invalid size")
-    end
-
-    size = (size * 10) + t.to_i
-    seen += 1
-  end
-
-  if seen == 8
-    raise ArgumentError("Invalid frame: size too long")
-  end
-
-  size
-end
-
-def read_control()
-  io = IO.for_fd(1)
-  size = read_size(io)
-
-  data = ""
-  while size > 0
-    d = io.readpartial(1)  # XXX - can't we just do readpartial(size)?
-    size -= d.length
-    data += d
-  end
-
+def read_control
+  size = $stdin.readline.chomp.to_i
+  raise ArgumentError, "Invalid frame: invalid size" if size.zero?
+  data = $stdin.read(size)
+  raise ArgumentError, "Invalid frame: frame too short" if data == nil || data.length < size
   dbg("<- #{data.strip}")
   JSON.parse(data)
 end
@@ -64,37 +28,32 @@ end
 # Specific control messages
 
 def send_auth_challenge(challenge)
-    send_control({
-        "command" => "authorize",
-        "cookie" => "1234", # must be present, but value doesn't matter
-        "challenge" => challenge
-    })
+  send_control({ "command" => "authorize",
+                 "cookie" => "1234", # must be present, but value doesn't matter
+                 "challenge" => challenge
+               })
 end
 
 def send_auth_response(response)
-    send_control({
-        "command" => "authorize",
-        "response" => response
-    })
+  send_control({ "command" => "authorize",
+                 "response" => response
+               })
 end
 
-def read_auth_reply()
-    cmd = read_control()
-    response = cmd["response"]
-    if cmd["command"] != "authorize" || !response
-      raise ArgumentError("Did not receive a valid authorize command")
-    end
-    response
+def read_auth_reply
+  cmd = read_control()
+  response = cmd["response"]
+  raise ArgumentError, "Did not receive a valid authorize command" if cmd["command"] != "authorize" || !response
+  response
 end
 
 def exit_with_problem(problem, message, auth_methods)
-    send_control({
-        "command" => "init",
-        "problem" => problem,
-        "message" => message,
-        "auth-method-results" => auth_methods
-    })
-    exit 1
+  send_control({ "command" => "init",
+                 "problem" => problem,
+                 "message" => message,
+                 "auth-method-results" => auth_methods
+               })
+  exit 1
 end
 
 # Talking to Foreman
@@ -115,13 +74,14 @@ def foreman_call(path, token)
   }
 
   dbg("<= #{res.code} #{res.body[0,500]}")
-  if res.code == "200"
+  case res.code
+  when "200"
     return JSON.parse(res.body)
-  elsif res.code == "401"
+  when "401"
     exit_with_problem("authentication-failed",
                       "Token was not valid",
                       { "password" => "not-tried", "token" => "denied" })
-  elsif res.code == "404"
+  when "404"
     return nil
   else
     $stderr.write("Error talking to foreman: #{res.body}\n")
@@ -263,16 +223,15 @@ send_auth_challenge("*")
 token = get_token_from_auth_data(read_auth_reply())
 params = foreman_call("cockpit/host_ssh_params/#{host}", token)
 
-if !params
-  exit_with_problem("access-denied", "Host #{host} is not known", nil)
-end
+exit_with_problem("access-denied", "Host #{host} is not known", nil) unless params
 
 params["command"] = "cockpit-bridge"
-if params["proxy"] == "not_available"
+case params["proxy"]
+when "not_available"
   exit_with_problem("access-denied", "A proxy is required to reach #{host} but all of them are down", nil)
-elsif params["proxy"] == "not_defined"
+when "not_defined"
   exit_with_problem("access-denied", "A proxy is required to reach #{host} but none has been configured", nil)
-elsif params["proxy"] == "direct"
+when "direct"
   exit_with_problem("access-denied", "Web console sessions require a proxy but none has been configured", nil)
 else
   ssh_with_proxy(params["proxy"], params)
