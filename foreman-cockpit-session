@@ -83,6 +83,76 @@ end
 
 # SSH via the smart proxy
 
+def ssh_write_request_header(sock, params)
+  data = JSON.dump(params) + "\r\n"
+  sock.write("POST /ssh/session HTTP/1.1\r\nConnection: upgrade\r\nUpgrade: raw\r\nContent-Length: #{data.length}\r\n\r\n#{data}")
+  sock.flush
+end
+
+def ssh_read_and_handle_response_header(sock)
+  header = ""
+  loop do
+    line = sock.readline
+    break unless line and line != "\r\n"
+    header += line
+  end
+
+  status_line, headers_text = header.split("\r\n", 2)
+  status = status_line.split(" ")[1]
+  if status != "101"
+    m = /^Content-Length:[ \t]*([0-9]+)\r?$/i.match(headers_text)
+    if m
+      expected_len = m[1].to_i
+    else
+      expected_len = -1
+    end
+    response = ""
+    while expected_len < 0 || response.length < expected_len
+      begin
+        response += sock.readpartial(4096)
+      rescue EOFError
+        break
+      end
+    end
+    if status[0] == "4"
+      exit_with_problem("access-denied", response, nil)
+    else
+      $stderr.write("Error talking to smart proxy: #{response}\n")
+      exit 1
+    end
+  end
+end
+
+def ssh_read_sock(sock)
+  data = ""
+  begin
+    loop do
+      data += sock.read_nonblock(4096)
+    end
+  rescue IO::WaitReadable
+    data
+  rescue IO::WaitWritable
+    # This might happen with SSL during a renogiation.  Block a
+    # bit to get it over with.
+    IO.select(nil, [sock])
+    retry
+  end
+  data
+end
+
+def ssh_write_sock(sock, data)
+  begin
+    sock.write_nonblock(data)
+  rescue IO::WaitWritable
+    0
+  rescue IO::WaitReadable
+    # This might happen with SSL during a renogiation.  Block a
+    # bit to get it over with.
+    IO.select([sock])
+    retry
+  end
+end
+
 def ssh_with_proxy(proxy, params)
   url = URI(proxy["url"])
   raw_sock = TCPSocket.open(url.hostname, url.port)
@@ -97,57 +167,23 @@ def ssh_with_proxy(proxy, params)
     sock = raw_sock
   end
 
-  data = JSON.dump(params) + "\r\n"
-  inp_buf = "POST /ssh/session HTTP/1.1\r\nConnection: upgrade\r\nUpgrade: raw\r\nContent-Length: #{data.length}\r\n\r\n#{data}"
+  ssh_write_request_header(sock, params)
+  ssh_read_and_handle_response_header(sock)
+
+  inp_buf = ""
   out_buf = ""
 
   ws_eof = false
   bridge_eof = false
-  expecting_http_header = true
 
-  status = ""
-
-  while true
+  loop do
     readers = [ ]
     writers = [ ]
 
     readers += [ $stdin ] unless ws_eof
     readers += [ sock ] unless bridge_eof
+    writers += [ $stdout ] unless out_buf == ""
     writers += [ sock ] unless inp_buf == ""
-
-    if out_buf.length > 0
-      if expecting_http_header
-        header_end = out_buf.index("\r\n\r\n")
-        if header_end
-          status_line, headers_text = out_buf[0..header_end].split("\r\n", 2)
-          status = status_line.split(" ")[1]
-          out_buf = out_buf[header_end+4..-1]
-          expecting_http_header = false
-          if status != "101"
-            m = /^Content-Length:[ \t]*([0-9]+)\r?$/i.match(headers_text)
-            if m
-              expected_len = m[1].to_i
-            else
-              expected_len = -1
-            end
-            while expected_len < 0 || out_buf.length < expected_len
-              begin
-                out_buf += sock.readpartial(4096)
-              rescue EOFError
-                break
-              end
-            end
-            if status[0] == "4"
-              exit_with_problem("access-denied", out_buf, nil)
-            else
-              $stderr.write("Error talking to smart proxy: #{out_buf}\n")
-              exit 1
-            end
-          end
-        end
-      end
-      writers += [ $stdout ] unless out_buf == ""
-    end
 
     break if readers.length + writers.length == 0
 
@@ -155,36 +191,18 @@ def ssh_with_proxy(proxy, params)
 
     if r.include?(sock)
       begin
-        while true
-          out_buf += sock.read_nonblock(4096)
-        end
+        out_buf += ssh_read_sock(sock)
       rescue EOFError
         bridge_eof = true
         break if out_buf == ""
-      rescue IO::WaitReadable
-        # This is fine.
-      rescue IO::WaitWritable
-        # This might happen with SSL during a renogiation.  Block a
-        # bit to get it over with.
-        IO.select(nil, [sock])
-        retry
       end
     end
 
     if w.include?(sock)
       begin
-        n = sock.write_nonblock(inp_buf)
+        n = ssh_write_sock(sock, inp_buf)
         inp_buf = inp_buf[n..-1]
-        if inp_buf == "" and ws_eof
-          raw_sock.close_write()
-        end
-      rescue IO::WaitWritable
-        # This is fine.
-      rescue IO::WaitReadable
-        # This might happen with SSL during a renogiation.  Block a
-        # bit to get it over with.
-        IO.select([sock])
-        retry
+        raw_sock.close_write() if inp_buf == "" and ws_eof
       end
     end
 
