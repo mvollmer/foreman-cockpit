@@ -179,13 +179,11 @@ RewriteCond %{HTTP:Upgrade} !=websocket [NC]
 RewriteRule /webcon/(.*)           http://127.0.0.1:9999/webcon/$1 [P]
 ```
 
-Tweak policy, restart, and enable as needed.
+Restart and enable as needed.
 
 ```
-# setsebool -P httpd_can_network_connect 1
-# semanage port -a -t websm_port_t -p tcp 9999
-# systemctl enable --now foreman-cockpit
 # systemctl restart httpd
+# systemctl enable --now foreman-cockpit
 ```
 
 ## Configuring Foreman
