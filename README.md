@@ -12,9 +12,6 @@ Current issues:
 
  - SELinux needs to be switched off.
 
- - Communication between cockpit-ws and foreman-proxy can not use
-   https.
-
 ## Setting up the virtual machine
 
 Create a new RHEL 7.6 virtual machine with 8GiB RAM and 10GiB disk
@@ -69,7 +66,7 @@ Pick one of the pools and attach to it.
 # yum update
 # yum install satellite
 
-# satellite-installer --enable-foreman-plugin-remote-execution --enable-foreman-proxy-plugin-remote-execution-ssh
+# satellite-installer --scenario satellite --enable-foreman-plugin-remote-execution --enable-foreman-proxy-plugin-remote-execution-ssh
 
 # firewall-cmd --add-service https
 # firewall-cmd --add-service https --permanent
@@ -84,11 +81,10 @@ Execution" plugin of Foreman.  That plugin comes in two parts: one for
 Foreman itself, and one for the Smart Proxy ("Capsule" in Satellingo,
 but we will keep calling it a proxy here).
 
-So we need two patches, and some more gems to satisfy their
+So we need two patches, and one more gems to satisfy their
 dependencies:
 
 ```
-# yum install patch
 # gem install net-ssh --version 4.2
 
 # cd /opt/theforeman/tfm/root/usr/share/gems/gems/foreman_remote_execution-1.6.7/
@@ -210,24 +206,8 @@ are both in the "Default Organization" and "Default Location".
   try to figure it out. :-)
 ]
 
-The Cockpit webserver will need to talk to the smart proxy, but this
-doesn't work yet for https.  We need to configure the smart proxy and
-its plugins to also allow connections with http.
-
-```
-# echo ":http_port: 8000" >>/etc/foreman-proxy/settings.yml
-# echo ":trusted_hosts:" >>/etc/foreman-proxy/settings.yml
-# sed -i -e 's/:enabled: https/:enabled: true/' /etc/foreman-proxy/settings.d/*
-# systemctl restart foreman-proxy
-```
-
-Then edit the satellite.demo.lan smart proxy and change its URL to
-"http://satellite.demo.lan:8000".  Note that you need to change the
-port and to change from "https://" to "http://".  Click the "Refresh
-features" button to see whether it still works.
-
-Then go to "Administer / Settings / RemoteExecution" and change
-"Cockpit URL" to `/webcon/=%{host}`.
+Go to "Administer / Settings / RemoteExecution" and change "Cockpit
+URL" to `/webcon/=%{host}`.
 
 [ Typing the "/" character into the text input field for the new value
   is impossible because the "/" yanks the focus to the filter text

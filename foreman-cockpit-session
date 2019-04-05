@@ -3,98 +3,51 @@
 require "json"
 require "net/https"
 
-def dbg(str)
-    $stderr.write(str + "\n")
-end
-
 # Cockpit protocol, encoding and decoding of control messages.
 
 def send_control(msg)
   text = JSON.dump(msg)
-  dbg("-> #{text}")
   $stdout.write("#{text.length+1}\n\n#{text}")
   $stdout.flush
 end
 
-def read_size(io)
-  size = 0
-  seen = 0
-
-  while seen < 8
-    t = io.readpartial(1)
-
-    unless t
-      return 0
-    end
-
-    if t == "\n"
-      break
-    end
-
-    if t.to_i.zero? && t != "0"
-      raise ArgumentError("Invalid frame: invalid size")
-    end
-
-    size = (size * 10) + t.to_i
-    seen += 1
-  end
-
-  if seen == 8
-    raise ArgumentError("Invalid frame: size too long")
-  end
-
-  size
-end
-
-def read_control()
-  io = IO.for_fd(1)
-  size = read_size(io)
-
-  data = ""
-  while size > 0
-    d = io.readpartial(1)  # XXX - can't we just do readpartial(size)?
-    size -= d.length
-    data += d
-  end
-
-  dbg("<- #{data.strip}")
+def read_control
+  size = $stdin.readline.chomp.to_i
+  raise ArgumentError, "Invalid frame: invalid size" if size.zero?
+  data = $stdin.read(size)
+  raise ArgumentError, "Invalid frame: too short" if data == nil || data.length < size
   JSON.parse(data)
 end
 
 # Specific control messages
 
 def send_auth_challenge(challenge)
-    send_control({
-        "command" => "authorize",
-        "cookie" => "1234", # must be present, but value doesn't matter
-        "challenge" => challenge
-    })
+  send_control({ "command" => "authorize",
+                 "cookie" => "1234", # must be present, but value doesn't matter
+                 "challenge" => challenge
+               })
 end
 
 def send_auth_response(response)
-    send_control({
-        "command" => "authorize",
-        "response" => response
-    })
+  send_control({ "command" => "authorize",
+                 "response" => response
+               })
 end
 
-def read_auth_reply()
-    cmd = read_control()
-    response = cmd["response"]
-    if cmd["command"] != "authorize" || !response
-      raise ArgumentError("Did not receive a valid authorize command")
-    end
-    response
+def read_auth_reply
+  cmd = read_control()
+  response = cmd["response"]
+  raise ArgumentError, "Did not receive a valid authorize command" if cmd["command"] != "authorize" || !response
+  response
 end
 
 def exit_with_problem(problem, message, auth_methods)
-    send_control({
-        "command" => "init",
-        "problem" => problem,
-        "message" => message,
-        "auth-method-results" => auth_methods
-    })
-    exit 1
+  send_control({ "command" => "init",
+                 "problem" => problem,
+                 "message" => message,
+                 "auth-method-results" => auth_methods
+               })
+  exit 1
 end
 
 # Talking to Foreman
@@ -105,7 +58,6 @@ end
 
 def foreman_call(path, token)
   foreman = ENV["FOREMAN_URL"] || "https://localhost/"
-  dbg("=> #{foreman}#{path}")
   uri = URI(foreman + path)
   req = Net::HTTP::Get.new(uri)
   req["Cookie"] = "_session_id=#{token}"
@@ -114,14 +66,14 @@ def foreman_call(path, token)
     |http| http.request(req)
   }
 
-  dbg("<= #{res.code} #{res.body[0,500]}")
-  if res.code == "200"
+  case res.code
+  when "200"
     return JSON.parse(res.body)
-  elsif res.code == "401"
+  when "401"
     exit_with_problem("authentication-failed",
                       "Token was not valid",
                       { "password" => "not-tried", "token" => "denied" })
-  elsif res.code == "404"
+  when "404"
     return nil
   else
     $stderr.write("Error talking to foreman: #{res.body}\n")
@@ -131,14 +83,89 @@ end
 
 # SSH via the smart proxy
 
-def ssh_with_proxy(urlstr, params)
-  url = URI(urlstr)
+def ssh_write_request_header(sock, params)
+  data = JSON.dump(params) + "\r\n"
+  sock.write("POST /ssh/session HTTP/1.1\r\nConnection: upgrade\r\nUpgrade: raw\r\nContent-Length: #{data.length}\r\n\r\n#{data}")
+  sock.flush
+end
+
+def ssh_read_and_handle_response_header(sock, url, params)
+  header = ""
+  loop do
+    line = sock.readline
+    break unless line and line != "\r\n"
+    header += line
+  end
+
+  status_line, headers_text = header.split("\r\n", 2)
+  status = status_line.split(" ")[1]
+  if status != "101"
+    m = /^Content-Length:[ \t]*([0-9]+)\r?$/i.match(headers_text)
+    if m
+      expected_len = m[1].to_i
+    else
+      expected_len = -1
+    end
+    response = ""
+    while expected_len < 0 || response.length < expected_len
+      begin
+        response += sock.readpartial(4096)
+      rescue EOFError
+        break
+      end
+    end
+    if status == "404"
+      exit_with_problem("access-denied", "The proxy #{url.hostname} does not support web console sessions", nil)
+    elsif status[0] == "4"
+      if response.include? "cockpit-bridge: command not found"
+        exit_with_problem("access-denied", "#{params["hostname"]} has no web console", nil)
+      else
+        exit_with_problem("access-denied", response, nil)
+      end
+    else
+      $stderr.write("Error talking to smart proxy: #{response}\n")
+      exit 1
+    end
+  end
+end
+
+def ssh_read_sock(sock)
+  data = ""
+  begin
+    loop do
+      data += sock.read_nonblock(4096)
+    end
+  rescue IO::WaitReadable
+    data
+  rescue IO::WaitWritable
+    # This might happen with SSL during a renegotiation.  Block a
+    # bit to get it over with.
+    IO.select(nil, [sock])
+    retry
+  end
+  data
+end
+
+def ssh_write_sock(sock, data)
+  begin
+    sock.write_nonblock(data)
+  rescue IO::WaitWritable
+    0
+  rescue IO::WaitReadable
+    # This might happen with SSL during a renegotiation.  Block a
+    # bit to get it over with.
+    IO.select([sock])
+    retry
+  end
+end
+
+def ssh_with_proxy(proxy, params)
+  url = URI(proxy["url"])
   raw_sock = TCPSocket.open(url.hostname, url.port)
   if url.scheme == 'https'
     ssl_context = OpenSSL::SSL::SSLContext.new()
-    # ssl_context.cert = OpenSSL::X509::Certificate.new(File.open("certificate.crt"))
-    # ssl_context.key = OpenSSL::PKey::RSA.new(File.open("certificate.key"))
-    # ssl_context.ssl_version = :SSLv23
+    ssl_context.cert = OpenSSL::X509::Certificate.new(proxy["ssl_certificate"])
+    ssl_context.key = OpenSSL::PKey.read(proxy["ssl_priv_key"])
     sock = OpenSSL::SSL::SSLSocket.new(raw_sock, ssl_context)
     sock.sync_close = true
     sock.connect
@@ -146,57 +173,23 @@ def ssh_with_proxy(urlstr, params)
     sock = raw_sock
   end
 
-  data = JSON.dump(params) + "\r\n"
-  inp_buf = "POST /ssh/session HTTP/1.1\r\nConnection: upgrade\r\nUpgrade: raw\r\nContent-Length: #{data.length}\r\n\r\n#{data}"
-  out_buf = ""
+  ssh_write_request_header(sock, params)
+  ssh_read_and_handle_response_header(sock, url, params)
+
+  inp_buf = ""
+  out_buf = ssh_read_sock(sock)
 
   ws_eof = false
   bridge_eof = false
-  expecting_http_header = true
 
-  status = ""
-
-  while true
+  loop do
     readers = [ ]
     writers = [ ]
 
     readers += [ $stdin ] unless ws_eof
     readers += [ sock ] unless bridge_eof
+    writers += [ $stdout ] unless out_buf == ""
     writers += [ sock ] unless inp_buf == ""
-
-    if out_buf.length > 0
-      if expecting_http_header
-        header_end = out_buf.index("\r\n\r\n")
-        if header_end
-          status_line, headers_text = out_buf[0..header_end].split("\r\n", 2)
-          status = status_line.split(" ")[1]
-          out_buf = out_buf[header_end+4..-1]
-          expecting_http_header = false
-          if status != "101"
-            m = /^Content-Length:[ \t]*([0-9]+)\r?$/i.match(headers_text)
-            if m
-              expected_len = m[1].to_i
-            else
-              expected_len = -1
-            end
-            while expected_len < 0 || out_buf.length < expected_len
-              begin
-                out_buf += sock.readpartial(4096)
-              rescue EOFError
-                break
-              end
-            end
-            if status[0] == "4"
-              exit_with_problem("access-denied", out_buf, nil)
-            else
-              $stderr.write("Error talking to smart proxy: #{out_buf}\n")
-              exit 1
-            end
-          end
-        end
-      end
-      writers += [ $stdout ] unless out_buf == ""
-    end
 
     break if readers.length + writers.length == 0
 
@@ -204,7 +197,7 @@ def ssh_with_proxy(urlstr, params)
 
     if r.include?(sock)
       begin
-        out_buf += sock.readpartial(4096)
+        out_buf += ssh_read_sock(sock)
       rescue EOFError
         bridge_eof = true
         break if out_buf == ""
@@ -212,11 +205,10 @@ def ssh_with_proxy(urlstr, params)
     end
 
     if w.include?(sock)
-      n = sock.write(inp_buf)
-      sock.flush()
-      inp_buf = inp_buf[n..-1]
-      if inp_buf == "" and ws_eof
-        raw_sock.close_write()
+      begin
+        n = ssh_write_sock(sock, inp_buf)
+        inp_buf = inp_buf[n..-1]
+        raw_sock.close_write() if inp_buf == "" and ws_eof
       end
     end
 
@@ -247,16 +239,15 @@ send_auth_challenge("*")
 token = get_token_from_auth_data(read_auth_reply())
 params = foreman_call("cockpit/host_ssh_params/#{host}", token)
 
-if !params
-  exit_with_problem("access-denied", "Host #{host} is not known", nil)
-end
+exit_with_problem("access-denied", "Host #{host} is not known", nil) unless params
 
 params["command"] = "cockpit-bridge"
-if params["proxy"] == "not_available"
+case params["proxy"]
+when "not_available"
   exit_with_problem("access-denied", "A proxy is required to reach #{host} but all of them are down", nil)
-elsif params["proxy"] == "not_defined"
+when "not_defined"
   exit_with_problem("access-denied", "A proxy is required to reach #{host} but none has been configured", nil)
-elsif params["proxy"] == "direct"
+when "direct"
   exit_with_problem("access-denied", "Web console sessions require a proxy but none has been configured", nil)
 else
   ssh_with_proxy(params["proxy"], params)
