@@ -89,7 +89,7 @@ def ssh_write_request_header(sock, params)
   sock.flush
 end
 
-def ssh_read_and_handle_response_header(sock)
+def ssh_read_and_handle_response_header(sock, url, params)
   header = ""
   loop do
     line = sock.readline
@@ -114,8 +114,14 @@ def ssh_read_and_handle_response_header(sock)
         break
       end
     end
-    if status[0] == "4"
-      exit_with_problem("access-denied", response, nil)
+    if status == "404"
+      exit_with_problem("access-denied", "The proxy #{url.hostname} does not support web console sessions", nil)
+    elsif status[0] == "4"
+      if response.include? "cockpit-bridge: command not found"
+        exit_with_problem("access-denied", "#{params["hostname"]} has no web console", nil)
+      else
+        exit_with_problem("access-denied", response, nil)
+      end
     else
       $stderr.write("Error talking to smart proxy: #{response}\n")
       exit 1
@@ -132,7 +138,7 @@ def ssh_read_sock(sock)
   rescue IO::WaitReadable
     data
   rescue IO::WaitWritable
-    # This might happen with SSL during a renogiation.  Block a
+    # This might happen with SSL during a renegotiation.  Block a
     # bit to get it over with.
     IO.select(nil, [sock])
     retry
@@ -146,7 +152,7 @@ def ssh_write_sock(sock, data)
   rescue IO::WaitWritable
     0
   rescue IO::WaitReadable
-    # This might happen with SSL during a renogiation.  Block a
+    # This might happen with SSL during a renegotiation.  Block a
     # bit to get it over with.
     IO.select([sock])
     retry
@@ -168,10 +174,10 @@ def ssh_with_proxy(proxy, params)
   end
 
   ssh_write_request_header(sock, params)
-  ssh_read_and_handle_response_header(sock)
+  ssh_read_and_handle_response_header(sock, url, params)
 
   inp_buf = ""
-  out_buf = ""
+  out_buf = ssh_read_sock(sock)
 
   ws_eof = false
   bridge_eof = false
