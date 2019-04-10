@@ -137,6 +137,16 @@ Also install the session helper:
 # chmod a+x foreman-cockpit-session
 ```
 
+And configure it:
+```
+# cat >/etc/foreman-cockpit/settings.yml
+:foreman_url: https://foreman.demo.lan
+
+:ssl_ca_file: /etc/puppetlabs/puppet/ssl/certs/ca.pem
+:ssl_certificate: /etc/puppetlabs/puppet/ssl/certs/foreman.demo.lan.pem
+:ssl_private_key: /etc/puppetlabs/puppet/ssl/private_keys/foreman.demo.lan.pem
+```
+
 This is for starting the special Cockpit:
 ```
 # cat >/etc/systemd/system/foreman-cockpit.service
@@ -146,8 +156,8 @@ Description=Foreman Cockpit Web Service
 [Service]
 Environment=XDG_CONFIG_DIRS=/etc/foreman-cockpit/
 ExecStart=/usr/libexec/cockpit-ws --no-tls --address 127.0.0.1 --port 9999
-User=cockpit-ws
-Group=cockpit-ws
+User=foreman
+Group=foreman
 
 [Install]
 WantedBy=multi-user.target

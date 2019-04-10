@@ -1,12 +1,28 @@
 #!/usr/bin/env ruby
 
+require "logger"
 require "json"
 require "net/https"
+require "yaml"
+
+# Logging
+
+$log = Logger.new($stderr)
+$log.formatter = proc { | severity, datetime, progname, msg | "#{severity}: #{msg}\n" }
+
+# Settings
+
+def read_settings
+  settings_path = ENV["FOREMAN_COCKPIT_SETTINGS"] || "/etc/foreman-cockpit/settings.yml"
+  $settings = YAML.load(File.read(settings_path))
+  $log.level = Logger.const_get ($settings[:log_level] || "INFO")
+end
 
 # Cockpit protocol, encoding and decoding of control messages.
 
 def send_control(msg)
   text = JSON.dump(msg)
+  $log.debug("Sending control message #{text}")
   $stdout.write("#{text.length+1}\n\n#{text}")
   $stdout.flush
 end
@@ -15,6 +31,7 @@ def read_control
   size = $stdin.readline.chomp.to_i
   raise ArgumentError, "Invalid frame: invalid size" if size.zero?
   data = $stdin.read(size)
+  $log.debug("Received control message #{data.lstrip}")
   raise ArgumentError, "Invalid frame: too short" if data == nil || data.length < size
   JSON.parse(data)
 end
@@ -42,6 +59,7 @@ def read_auth_reply
 end
 
 def exit_with_problem(problem, message, auth_methods)
+  $log.error("#{problem} - #{message}")
   send_control({ "command" => "init",
                  "problem" => problem,
                  "message" => message,
@@ -57,14 +75,23 @@ def get_token_from_auth_data(auth_data)
 end
 
 def foreman_call(path, token)
-  foreman = ENV["FOREMAN_URL"] || "https://localhost/"
-  uri = URI(foreman + path)
+  foreman = $settings[:foreman_url] || "https://localhost/"
+  uri = URI(foreman + "/" + path)
+
+  $log.debug("Foreman request GET #{uri}")
+
+  http = Net::HTTP.new(uri.hostname, uri.port)
+  if uri.scheme == "https"
+    http.use_ssl = true
+    http.verify_mode = OpenSSL::SSL::VERIFY_PEER
+    http.ca_file = $settings[:ssl_ca_file]
+  end
+
   req = Net::HTTP::Get.new(uri)
   req["Cookie"] = "_session_id=#{token}"
-  res = Net::HTTP.start(uri.hostname, uri.port,
-                        :use_ssl => uri.scheme == "https", :verify_mode => OpenSSL::SSL::VERIFY_NONE) {
-    |http| http.request(req)
-  }
+  res = http.request(req)
+
+  $log.debug("Foreman response #{res.code} - #{res.body}")
 
   case res.code
   when "200"
@@ -76,7 +103,7 @@ def foreman_call(path, token)
   when "404"
     return nil
   else
-    $stderr.write("Error talking to foreman: #{res.body}\n")
+    $log.error("Error talking to foreman: #{res.body}\n")
     exit 1
   end
 end
@@ -123,7 +150,7 @@ def ssh_read_and_handle_response_header(sock, url, params)
         exit_with_problem("access-denied", response, nil)
       end
     else
-      $stderr.write("Error talking to smart proxy: #{response}\n")
+      $log.error("Error talking to smart proxy: #{response}\n")
       exit 1
     end
   end
@@ -160,12 +187,13 @@ def ssh_write_sock(sock, data)
 end
 
 def ssh_with_proxy(proxy, params)
-  url = URI(proxy["url"])
+  url = URI(proxy)
+  $log.debug("Connecting to proxy at #{url}")
   raw_sock = TCPSocket.open(url.hostname, url.port)
   if url.scheme == 'https'
     ssl_context = OpenSSL::SSL::SSLContext.new()
-    ssl_context.cert = OpenSSL::X509::Certificate.new(proxy["ssl_certificate"])
-    ssl_context.key = OpenSSL::PKey.read(proxy["ssl_priv_key"])
+    ssl_context.cert = OpenSSL::X509::Certificate.new(File.read($settings[:ssl_certificate]))
+    ssl_context.key = OpenSSL::PKey.read(File.read($settings[:ssl_private_key]))
     sock = OpenSSL::SSL::SSLSocket.new(raw_sock, ssl_context)
     sock.sync_close = true
     sock.connect
@@ -233,13 +261,17 @@ end
 
 # Main
 
+read_settings
+
 host = ARGV[0]
 
 send_auth_challenge("*")
 token = get_token_from_auth_data(read_auth_reply())
-params = foreman_call("cockpit/host_ssh_params/#{host}", token)
 
+params = foreman_call("cockpit/host_ssh_params/#{host}", token)
 exit_with_problem("access-denied", "Host #{host} is not known", nil) unless params
+
+$log.debug("SSH parameters #{params}")
 
 params["command"] = "cockpit-bridge"
 case params["proxy"]

@@ -88,7 +88,7 @@ index 3d9cc6b..a1c5baf 100644
      end
 
 diff --git a/app/models/ssh_execution_provider.rb b/app/models/ssh_execution_provider.rb
-index 8357f55..c8c29b2 100644
+index 8357f55..e999215 100644
 --- a/app/models/ssh_execution_provider.rb
 +++ b/app/models/ssh_execution_provider.rb
 @@ -25,6 +25,23 @@ class SSHExecutionProvider < RemoteExecutionProvider
@@ -100,7 +100,7 @@ index 8357f55..c8c29b2 100644
 +      proxy = proxy_selector.determine_proxy(host, 'SSH')
 +      {
 +        :hostname => find_ip_or_hostname(host),
-+        :proxy => ssh_proxy_params(proxy),
++        :proxy => proxy.class == Symbol ? proxy : proxy.url,
 +        :ssh_user => ssh_user(host),
 +        :ssh_port => ssh_port(host),
 +        :ssh_password => ssh_password(host),
@@ -115,22 +115,6 @@ index 8357f55..c8c29b2 100644
      private
 
      def ssh_user(host)
-@@ -34,5 +51,15 @@ class SSHExecutionProvider < RemoteExecutionProvider
-     def ssh_port(host)
-       Integer(host_setting(host, :remote_execution_ssh_port))
-     end
-+
-+    def ssh_proxy_params(proxy)
-+      return proxy if proxy.class == Symbol
-+
-+      {
-+        :url => proxy.url,
-+        :ssl_certificate => File.open(Setting[:ssl_certificate]).read,
-+        :ssl_priv_key => File.open(Setting[:ssl_priv_key]).read
-+      }
-+    end
-   end
- end
 diff --git a/config/routes.rb b/config/routes.rb
 index a7cb322..74a31c6 100644
 --- a/config/routes.rb
