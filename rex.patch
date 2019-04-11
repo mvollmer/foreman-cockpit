@@ -88,11 +88,11 @@ index 3d9cc6b..a1c5baf 100644
      end
 
 diff --git a/app/models/ssh_execution_provider.rb b/app/models/ssh_execution_provider.rb
-index 8357f55..e999215 100644
+index 9ab3d4e..5d73ddb 100644
 --- a/app/models/ssh_execution_provider.rb
 +++ b/app/models/ssh_execution_provider.rb
-@@ -25,6 +25,23 @@ class SSHExecutionProvider < RemoteExecutionProvider
-       host_setting(host, :remote_execution_ssh_key_passphrase)
+@@ -29,6 +29,23 @@ class SSHExecutionProvider < RemoteExecutionProvider
+       'ssh'
      end
 
 +    def ssh_params(host)

@@ -10,37 +10,84 @@ index ee048ba..8b76ab0 100644
  
  module Proxy::RemoteExecution
 diff --git a/lib/smart_proxy_remote_execution_ssh/api.rb b/lib/smart_proxy_remote_execution_ssh/api.rb
-index 9211f19..d872bfa 100644
+index 9211f19..9e4f5e3 100644
 --- a/lib/smart_proxy_remote_execution_ssh/api.rb
 +++ b/lib/smart_proxy_remote_execution_ssh/api.rb
-@@ -1,9 +1,206 @@
+@@ -4,6 +4,15 @@ module Proxy::RemoteExecution
+       get "/pubkey" do
+         File.read(Ssh.public_key_file)
+       end
++
++      post "/session" do
++        session = Cockpit::Session.new(env)
++        unless session.valid?
++          return [ 400, "Invalid request: /ssh/session requires connection upgrade to 'raw'" ]
++        end
++        session.hijack!
++        101
++      end
+     end
+   end
+ end
+diff --git a/lib/smart_proxy_remote_execution_ssh/cockpit.rb b/lib/smart_proxy_remote_execution_ssh/cockpit.rb
+new file mode 100644
+index 0000000..8087687
+--- /dev/null
++++ b/lib/smart_proxy_remote_execution_ssh/cockpit.rb
+@@ -0,0 +1,252 @@
 +require 'net/ssh'
++require 'forwardable'
 +
-+# When hijacking the socket of a TLS connection, we get a
-+# OpenSSL::SSL::SSLSocket or Puma::MiniSSL::Socket, which don't behave
-+# the same as real IO::Sockets.  We need to add recv and send for the
-+# benefit of the Net::SSH::BufferedIo mixin, and closed? for our own
-+# convenience.
++module Proxy::RemoteExecution
++  module Cockpit
++    # A wrapper class around different kind o sockets to comply with Net::SSH event loop
++    class BufferedSocket
++      include Net::SSH::BufferedIo
++      extend Forwardable
 +
-+module Puma
-+  module MiniSSL
-+    class Socket
-+      def closed?
-+        @socket.closed?
++      # The list of methods taken from OpenSSL::SSL::SocketForwarder for the object to act like a socket
++      def_delegators(:@socket, :to_io, :addr, :peeraddr, :setsockopt, :getsockopt, :fcntl, :close, :closed?, :do_not_reverse_lookup=)
++
++      def initialize(socket)
++        @socket = socket
++        initialize_buffered_io
 +      end
-+      def recv(n)
-+        readpartial(n)
++
++      def recv
++        raise NotImplementedError
 +      end
-+      def send(mesg, flags)
-+        write(mesg)
++
++      def send
++        raise NotImplementedError
++      end
++
++      def self.applies_for?(socket)
++        raise NotImplementedError
++      end
++
++      def self.build(socket)
++        klass = [OpenSSLBufferedSocket, StandardBufferedSocket].find do |potential_class|
++          potential_class.applies_for?(socket)
++        end
++        raise "No suitable implementation of buffered socket available for #{socket.inspect}" unless klass
++        klass.new(socket)
 +      end
 +    end
-+  end
-+end
 +
-+module OpenSSL
-+  module SSL
-+    class SSLSocket
++    class StandardBufferedSocket < BufferedSocket
++      def_delegators(:@socket, :send, :recv)
++
++      def self.applies_for?(socket)
++        socket.respond_to?(:send) && socket.respond_to?(:recv)
++      end
++    end
++
++    class OpenSSLBufferedSocket < BufferedSocket
++      def self.applies_for?(socket)
++        socket.is_a? ::OpenSSL::SSL::SSLSocket
++      end
++      def_delegators(:@socket, :read_nonblock, :write_nonblock, :close)
++
 +      def recv(n)
 +        res = ""
 +        begin
@@ -48,7 +95,7 @@ index 9211f19..d872bfa 100644
 +          # loop, we need to repeatedly call read_nonblock; a single
 +          # call is not enough.
 +          while true
-+            res += read_nonblock(n)
++            res += @socket.read_nonblock(n)
 +          end
 +        rescue IO::WaitReadable
 +          # Sometimes there is no payload after reading everything
@@ -56,170 +103,202 @@ index 9211f19..d872bfa 100644
 +          # as EOF by Net::SSH. So we block a bit until we have
 +          # something to return.
 +          if res == ""
-+            IO.select([io])
++            IO.select([@socket.to_io])
 +            retry
 +          else
 +            res
 +          end
 +        rescue IO::WaitWritable
 +          # A renegotiation is happening, let it proceed.
-+          IO.select(nil, [io])
++          IO.select(nil, [@socket.to_io])
 +          retry
 +        end
 +      end
 +
 +      def send(mesg, flags)
 +        begin
-+          write_nonblock(mesg)
++          @socket.write_nonblock(mesg)
 +        rescue IO::WaitWritable
 +          0
 +        rescue IO::WaitReadable
-+          IO.select([io])
++          IO.select([@socket.to_io])
 +          retry
 +        end
 +      end
 +    end
-+  end
-+end
 +
- module Proxy::RemoteExecution
-   module Ssh
-     class Api < ::Sinatra::Base
++    class Session
++      include ::Proxy::Log
 +
-       get "/pubkey" do
-         File.read(Ssh.public_key_file)
-       end
++      def initialize(env)
++        @env = env
++      end
 +
-+      post "/session" do
-+        if env["HTTP_CONNECTION"] != "upgrade" or env["HTTP_UPGRADE"] != "raw"
-+          return [ 400, "Invalid request: /ssh/session requires connection upgrade to 'raw'" ]
-+        end
++      def valid?
++        @env["HTTP_CONNECTION"] == "upgrade" && @env["HTTP_UPGRADE"] == "raw"
++      end
 +
-+        params = MultiJson.load(env["rack.input"].read)
-+        key_file = Proxy::RemoteExecution::Ssh.private_key_file
-+
-+        methods = %w(publickey)
-+        methods.unshift('password') if params["ssh_password"]
-+
-+        ssh_options = { }
-+        ssh_options[:port] = params["ssh_port"] if params["ssh_port"]
-+        ssh_options[:keys] = [ key_file ] if key_file
-+        ssh_options[:password] = params["ssh_password"] if params["ssh_password"]
-+        ssh_options[:passphrase] = params[:ssh_key_passphrase] if params[:ssh_key_passphrase]
-+        ssh_options[:keys_only] = true
-+        ssh_options[:auth_methods] = methods
-+        ssh_options[:verify_host_key] = true
-+        ssh_options[:number_of_password_prompts] = 1
-+
-+        socket = nil
-+        if env['WEBRICK_SOCKET']
-+          socket = env['WEBRICK_SOCKET']
-+        elsif env['rack.hijack?']
++      def hijack!
++        @socket = nil
++        if @env['WEBRICK_SOCKET']
++          @socket = @env['WEBRICK_SOCKET']
++        elsif @env['rack.hijack?']
 +          begin
-+            env['rack.hijack'].call
++            @env['rack.hijack'].call
 +          rescue NotImplementedError
 +          end
-+          socket = env['rack.hijack_io']
++          @socket = @env['rack.hijack_io']
 +        end
-+        if !socket
-+          return [ 501, "Internal error: request hijacking not available" ]
-+        end
-+
-+        ssh_on_socket(socket, params["command"], params["ssh_user"], params["hostname"], ssh_options)
-+        101
++        raise 'Internal error: request hijacking not available' unless @socket
++        ssh_on_socket
 +      end
 +
-+      def ssh_on_socket(socket, command, ssh_user, host, ssh_options)
-+        started = false
++      private
++
++      def ssh_on_socket
++        with_error_handling { start_ssh_loop }
++      end
++
++      def with_error_handling
++        yield
++      rescue Net::SSH::AuthenticationFailed => e
++        send_error(401, e.message)
++      rescue Errno::EHOSTUNREACH
++        send_error(400, "No route to #{host}")
++      rescue SystemCallError => e
++        send_error(400, e.message)
++      rescue SocketError => e
++        send_error(400, e.message)
++      rescue Exception => e
++        logger.error e.message
++        logger.debug e.backtrace.join("\n")
++        send_error(500, "Internal error") unless @started
++      ensure
++        unless buf_socket.closed?
++          buf_socket.wait_for_pending_sends
++          buf_socket.close
++        end
++      end
++
++      def start_ssh_loop
 +        err_buf = ""
-+        socket.extend(Net::SSH::BufferedIo)
 +
-+        send_start = -> {
-+          if !started
-+            started = true
-+            socket.enqueue("Status: 101\r\n")
-+            socket.enqueue("Connection: upgrade\r\n")
-+            socket.enqueue("Upgrade: raw\r\n")
-+            socket.enqueue("\r\n")
-+          end
-+        }
++        Net::SSH.start(host, ssh_user, ssh_options) do |ssh|
++          channel = ssh.open_channel do |ch|
++            ch.exec(command) do |ch, success|
++              raise "could not execute command" unless success
 +
-+        send_error = -> (code, msg) {
-+          socket.enqueue("Status: #{code}\r\n")
-+          socket.enqueue("Connection: close\r\n")
-+          socket.enqueue("\r\n")
-+          socket.enqueue(msg)
-+        }
++              ssh.listen_to(buf_socket)
 +
-+        begin
-+          Net::SSH.start(host, ssh_user, ssh_options) do |ssh|
-+            channel = ssh.open_channel do |ch|
-+              ch.exec(command) do |ch, success|
-+                raise "could not execute command" unless success
-+
-+                ssh.listen_to(socket)
-+
-+                ch.on_process do
-+                  if socket.available > 0
-+                    ch.send_data(socket.read_available)
-+                  end
-+                  if socket.closed?
-+                    ch.close
-+                  end
++              ch.on_process do
++                if buf_socket.available > 0
++                  ch.send_data(buf_socket.read_available)
 +                end
-+
-+                ch.on_data do |ch2, data|
-+                  send_start.call
-+                  socket.enqueue(data)
-+                end
-+
-+                ch.on_request('exit-status') do |ch, data|
-+                  code = data.read_long
-+                  if code == 0
-+                    send_start.call
-+                  end
-+                  err_buf += "Process exited with code #{code}.\r\n"
++                if buf_socket.closed?
 +                  ch.close
-+                end
-+
-+                channel.on_request('exit-signal') do |ch, data|
-+                  err_buf += "Process was terminated with signal #{data.read_string}.\r\n"
-+                  ch.close
-+                end
-+
-+                ch.on_extended_data do |ch2, type, data|
-+                  err_buf += data
 +                end
 +              end
-+            end
 +
-+            channel.wait
-+            if !started
-+              send_error.call(400, err_buf)
++              ch.on_data do |ch2, data|
++                send_start
++                buf_socket.enqueue(data)
++              end
++
++              ch.on_request('exit-status') do |ch, data|
++                code = data.read_long
++                send_start.call if code.zero?
++                err_buf += "Process exited with code #{code}.\r\n"
++                ch.close
++              end
++
++              ch.on_request('exit-signal') do |ch, data|
++                err_buf += "Process was terminated with signal #{data.read_string}.\r\n"
++                ch.close
++              end
++
++              ch.on_extended_data do |ch2, type, data|
++                err_buf += data
++              end
 +            end
 +          end
-+        rescue Net::SSH::AuthenticationFailed => e
-+          send_error.call(401, e.message)
-+        rescue Errno::EHOSTUNREACH
-+          send_error.call(400, "No route to #{host}")
-+        rescue SystemCallError => e
-+          send_error.call(400, e.message)
-+        rescue SocketError => e
-+          send_error.call(400, e.message)
-+        rescue Exception => e
-+          logger.error e.message
-+          e.backtrace.each { |line| logger.debug line }
-+          send_error.call(500, "Internal error") unless started
-+        end
-+        if not socket.closed?
-+          socket.wait_for_pending_sends
-+          socket.close
++
++          channel.wait
++          send_error(400, err_buf) unless @started
 +        end
 +      end
 +
-     end
-   end
- end
++      def send_start
++        unless @started
++          @started = true
++          buf_socket.enqueue("Status: 101\r\n")
++          buf_socket.enqueue("Connection: upgrade\r\n")
++          buf_socket.enqueue("Upgrade: raw\r\n")
++          buf_socket.enqueue("\r\n")
++        end
++      end
++
++      def send_error(code, msg)
++        buf_socket.enqueue("Status: #{code}\r\n")
++        buf_socket.enqueue("Connection: close\r\n")
++        buf_socket.enqueue("\r\n")
++        buf_socket.enqueue(msg)
++      end
++
++      def params
++        @params ||= MultiJson.load(@env["rack.input"].read)
++      end
++
++      def key_file
++        @key_file ||= Proxy::RemoteExecution::Ssh.private_key_file
++      end
++
++      def buf_socket
++        @buffered_socket ||= BufferedSocket.build(@socket)
++      end
++
++      def command
++        params["command"]
++      end
++
++      def ssh_user
++        params["ssh_user"]
++      end
++
++      def host
++        params["hostname"]
++      end
++
++      def ssh_options
++        auth_methods = %w(publickey)
++        auth_methods.unshift('password') if params["ssh_password"]
++
++        ret = { }
++        ret[:port] = params["ssh_port"] if params["ssh_port"]
++        ret[:keys] = [ key_file ] if key_file
++        ret[:password] = params["ssh_password"] if params["ssh_password"]
++        ret[:passphrase] = params[:ssh_key_passphrase] if params[:ssh_key_passphrase]
++        ret[:keys_only] = true
++        ret[:auth_methods] = auth_methods
++        ret[:verify_host_key] = true
++        ret[:number_of_password_prompts] = 1
++        ret
++      end
++    end
++
++  end
++end
+diff --git a/lib/smart_proxy_remote_execution_ssh/plugin.rb b/lib/smart_proxy_remote_execution_ssh/plugin.rb
+index 8884ff6..53c39a2 100644
+--- a/lib/smart_proxy_remote_execution_ssh/plugin.rb
++++ b/lib/smart_proxy_remote_execution_ssh/plugin.rb
+@@ -15,6 +15,7 @@ module Proxy::RemoteExecution::Ssh
+     after_activation do
+       require 'smart_proxy_dynflow'
+       require 'smart_proxy_remote_execution_ssh/version'
++      require 'smart_proxy_remote_execution_ssh/cockpit'
+       require 'smart_proxy_remote_execution_ssh/api'
+ 
+       begin
 diff --git a/lib/smart_proxy_remote_execution_ssh/webrick_ext.rb b/lib/smart_proxy_remote_execution_ssh/webrick_ext.rb
 new file mode 100644
 index 0000000..8ec00c8
@@ -237,3 +316,13 @@ index 0000000..8ec00c8
 +  end
 +  ::WEBrick::HTTPRequest.send(:prepend, WEBrickExt::HTTPRequestExt)
 +end
+diff --git a/smart_proxy_remote_execution_ssh.gemspec b/smart_proxy_remote_execution_ssh.gemspec
+index f8e0970..c05f71e 100644
+--- a/smart_proxy_remote_execution_ssh.gemspec
++++ b/smart_proxy_remote_execution_ssh.gemspec
+@@ -31,4 +31,5 @@ Gem::Specification.new do |gem|
+   gem.add_development_dependency('rubocop', '0.32.1')
+ 
+   gem.add_runtime_dependency('smart_proxy_dynflow', '>= 0.1.0', '< 0.3.0')
++  gem.add_runtime_dependency('net-ssh')
+ end
