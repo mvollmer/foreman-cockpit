@@ -7,7 +7,7 @@ index ee048ba..8b76ab0 100644
  require 'smart_proxy_dynflow'
 +require 'smart_proxy_remote_execution_ssh/webrick_ext'
  require 'smart_proxy_remote_execution_ssh/plugin'
- 
+
  module Proxy::RemoteExecution
 diff --git a/lib/smart_proxy_remote_execution_ssh/api.rb b/lib/smart_proxy_remote_execution_ssh/api.rb
 index 9211f19..9e4f5e3 100644
@@ -297,7 +297,7 @@ index 8884ff6..53c39a2 100644
        require 'smart_proxy_remote_execution_ssh/version'
 +      require 'smart_proxy_remote_execution_ssh/cockpit'
        require 'smart_proxy_remote_execution_ssh/api'
- 
+
        begin
 diff --git a/lib/smart_proxy_remote_execution_ssh/webrick_ext.rb b/lib/smart_proxy_remote_execution_ssh/webrick_ext.rb
 new file mode 100644
@@ -316,13 +316,3 @@ index 0000000..8ec00c8
 +  end
 +  ::WEBrick::HTTPRequest.send(:prepend, WEBrickExt::HTTPRequestExt)
 +end
-diff --git a/smart_proxy_remote_execution_ssh.gemspec b/smart_proxy_remote_execution_ssh.gemspec
-index f8e0970..c05f71e 100644
---- a/smart_proxy_remote_execution_ssh.gemspec
-+++ b/smart_proxy_remote_execution_ssh.gemspec
-@@ -31,4 +31,5 @@ Gem::Specification.new do |gem|
-   gem.add_development_dependency('rubocop', '0.32.1')
- 
-   gem.add_runtime_dependency('smart_proxy_dynflow', '>= 0.1.0', '< 0.3.0')
-+  gem.add_runtime_dependency('net-ssh')
- end
