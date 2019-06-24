@@ -1,9 +1,0 @@
-[Unit]
-Description=Foreman Cockpit Web Service
-
-[Service]
-Environment=XDG_CONFIG_DIRS=/etc/foreman-cockpit/
-ExecStart=/usr/libexec/cockpit-ws --no-tls --address 127.0.0.1 --port 9999
-User=cockpit-ws
-Group=cockpit-ws
-
