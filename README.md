@@ -4,9 +4,14 @@ There is work in progress to integrate Cockpit into Foreman.
 Eventually, setting this up should be trivial but until it's all
 wrapped up and shipped -- it's complicated.
 
+Foreman 1.22 is the first version that includes the necessary code for
+the Cockpit integration, but the foreman-installer can not yet create
+the necessary configuration files.
+
 The following instructions will set up a single new virtual machine
 that runs Foreman and you can seamlessly open Cockpit from Foreman for
 that same virtual machine.
+
 
 Current issues:
 
@@ -50,12 +55,12 @@ Switch off SELinux permanently:
 To install Foreman, you need to add a couple of RPM repositories,
 install `foreman-installer`, and then run it.
 
-More information here: https://theforeman.org/manuals/1.21/index.html#3.InstallingForeman
+More information here: https://theforeman.org/manuals/1.22/quickstart_guide.html
 
 ```
-# yum install https://yum.puppetlabs.com/puppet5/puppet5-release-el-7.noarch.rpm
+# yum install https://yum.puppet.com/puppet6-release-el-7.noarch.rpm
 # yum install http://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
-# yum install https://yum.theforeman.org/releases/1.21/el7/x86_64/foreman-release.rpm
+# yum install https://yum.theforeman.org/releases/1.22/el7/x86_64/foreman-release.rpm
 
 # yum update
 # yum install foreman-installer
@@ -67,29 +72,6 @@ More information here: https://theforeman.org/manuals/1.21/index.html#3.Installi
 ```
 
 Write down the admin password that the installer outputs.
-
-## Patching Foreman
-
-The Cockpit integration into Foreman is done as part of the "Remote
-Execution" plugin.  That plugin comes in two parts: one for Foreman
-itself, one for the Smart Proxy.
-
-So we need two patches, and one more gem to satisfy their
-dependencies:
-
-```
-# yum install patch
-# gem install net-ssh --version 4.2
-
-# cd /opt/theforeman/tfm/root/usr/share/gems/gems/foreman_remote_execution-1.7.0/
-# curl https://raw.githubusercontent.com/mvollmer/foreman-cockpit/master/rex.patch | patch -p1
-
-# cd /usr/share/gems/gems/smart_proxy_remote_execution_ssh-0.2.0/
-# curl https://raw.githubusercontent.com/mvollmer/foreman-cockpit/master/proxy-rex.patch | patch -p1
-
-# systemctl restart httpd
-# systemctl restart foreman-proxy
-```
 
 ## Setting up Cockpit
 
@@ -120,7 +102,7 @@ Origins = https://foreman.demo.lan
 Action = remote-login-ssh
 
 [SSH-Login]
-command = /usr/libexec/foreman-cockpit-session
+command = /opt/theforeman/tfm/root/usr/share/gems/gems/foreman_remote_execution-1.8.0/extra/cockpit/foreman-cockpit-session
 
 [OAuth]
 Url = /cockpit/redirect
@@ -130,14 +112,8 @@ Note that the "Origins" value is the name of the machine.  If you have
 used something else than "foreman.demo.lan", make sure to use the
 right name there.
 
-Also install the session helper:
-```
-# cd /usr/libexec/
-# curl https://raw.githubusercontent.com/mvollmer/foreman-cockpit/master/foreman-cockpit-session >foreman-cockpit-session
-# chmod a+x foreman-cockpit-session
-```
+Also configure the session helper:
 
-And configure it:
 ```
 # cat >/etc/foreman-cockpit/settings.yml
 :foreman_url: https://foreman.demo.lan
