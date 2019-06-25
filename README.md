@@ -212,3 +212,44 @@ virtual machine without password:
 
 Now you can go to the page for the foreman.demo.lan host itself.  You
 should see the "Web Console" button, and it should work.
+
+## Addendum: Puma
+
+In the future, the Foreman smart proxy will offer a choice between
+Puma and Webrick.  The Cockpit integration needs to be adapted for
+Puma, and here is how you can test that.
+
+Patch the smart proxy to support Puma:
+
+```
+# yum install patch
+# cd /usr/share/foreman-proxy
+# curl https://raw.githubusercontent.com/mvollmer/foreman-cockpit/master/proxy-puma.patch | patch -p1
+```
+
+Install the Puma gem:
+
+```
+# yum install gcc ruby-devel openssl-devel
+# gem install puma -v 3.10.0
+```
+
+Tell the proxy to use Puma:
+
+```
+# echo >>/etc/foreman-proxy/settings.yml ":http_server_type: 'puma'"
+```
+
+Tell the proxy to only listen on IPv4, because IPv6 is nothing but trouble:
+
+```
+# sed -i /etc/foreman-proxy/settings.yml -e 's/:bind_host: .*/:bind_host: "0.0.0.0"/'
+```
+
+Finally, patch the REX plugin to support SSH sessions also with Puma and restart:
+
+```
+# cd /usr/share/gems/gems/smart_proxy_remote_execution_ssh-0.2.1/
+# curl https://raw.githubusercontent.com/mvollmer/foreman-cockpit/master/proxy-rex-puma.patch | patch -p1
+# systemctl restart foreman-proxy
+```
