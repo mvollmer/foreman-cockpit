@@ -1,5 +1,5 @@
 diff --git a/lib/smart_proxy_remote_execution_ssh/cockpit.rb b/lib/smart_proxy_remote_execution_ssh/cockpit.rb
-index 7a3f257..d0ddd78 100644
+index 7a3f257..2f0a8ee 100644
 --- a/lib/smart_proxy_remote_execution_ssh/cockpit.rb
 +++ b/lib/smart_proxy_remote_execution_ssh/cockpit.rb
 @@ -29,7 +29,7 @@ module Proxy::RemoteExecution
@@ -7,30 +7,33 @@ index 7a3f257..d0ddd78 100644
  
        def self.build(socket)
 -        klass = [OpenSSLBufferedSocket, StandardBufferedSocket].find do |potential_class|
-+        klass = [SSLBufferedSocket, StandardBufferedSocket].find do |potential_class|
++        klass = [OpenSSLBufferedSocket, MiniSSLBufferedSocket, StandardBufferedSocket].find do |potential_class|
            potential_class.applies_for?(socket)
          end
          raise "No suitable implementation of buffered socket available for #{socket.inspect}" unless klass
-@@ -45,9 +45,9 @@ module Proxy::RemoteExecution
+@@ -90,6 +90,25 @@ module Proxy::RemoteExecution
        end
      end
  
--    class OpenSSLBufferedSocket < BufferedSocket
-+    class SSLBufferedSocket < BufferedSocket
-       def self.applies_for?(socket)
--        socket.is_a? ::OpenSSL::SSL::SSLSocket
-+        socket.is_a? ::OpenSSL::SSL::SSLSocket or socket.is_a? ::Puma::MiniSSL::Socket
-       end
-       def_delegators(:@socket, :read_nonblock, :write_nonblock, :close)
- 
-@@ -88,6 +88,10 @@ module Proxy::RemoteExecution
-           retry
-         end
-       end
++    class MiniSSLBufferedSocket < BufferedSocket
++      def self.applies_for?(socket)
++        socket.is_a? ::Puma::MiniSSL::Socket
++      end
++      def_delegators(:@socket, :read_nonblock, :write_nonblock, :close)
++
++      def recv(n)
++        @socket.read_nonblock(n)
++      end
++
++      def send(mesg, flags)
++        @socket.write_nonblock(mesg)
++      end
 +
 +      def closed?
 +        @socket.to_io.closed?
 +      end
-     end
- 
++    end
++
      class Session
+       include ::Proxy::Log
+ 
