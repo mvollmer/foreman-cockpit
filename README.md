@@ -1,21 +1,14 @@
-# Integrating Foreman and Cockpit
+# Foreman and Cockpit
 
-There is work in progress to integrate Cockpit into Foreman.
-Eventually, setting this up should be trivial but until it's all
-wrapped up and shipped -- it's complicated.
+There used to be work in progress to integrate Cockpit into Foreman,
+and we would record the necessary manual steps here to make the it all
+work.  Now it's all wrapped up and shipped, and things are a lot simpler.
 
-Foreman 1.22 is the first version that includes the necessary code for
-the Cockpit integration, but the foreman-installer can not yet create
-the necessary configuration files.
+Still, it's good to document exactly what is supposed to work and how.
 
 The following instructions will set up a single new virtual machine
 that runs Foreman and you can seamlessly open Cockpit from Foreman for
 that same virtual machine.
-
-
-Current issues:
-
- - SELinux needs to be switched off.
 
 ## Setting up the virtual machine
 
@@ -43,29 +36,24 @@ Make sure that the new virtual machine can also be reached via its
 a line like above to `/etc/hosts` on the machine that will run the
 browser.
 
-Switch off SELinux permanently:
-
-```
-# setenforce 0
-# echo "SELINUX=permissive" >/etc/selinux/config
-```
-
 ## Installing Foreman
 
 To install Foreman, you need to add a couple of RPM repositories,
 install `foreman-installer`, and then run it.
 
-More information here: https://theforeman.org/manuals/1.22/quickstart_guide.html
+More information here: https://theforeman.org/manuals/1.24/quickstart_guide.html
 
 ```
 # yum install https://yum.puppet.com/puppet6-release-el-7.noarch.rpm
 # yum install http://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
-# yum install https://yum.theforeman.org/releases/1.22/el7/x86_64/foreman-release.rpm
+# yum install https://yum.theforeman.org/releases/1.24/el7/x86_64/foreman-release.rpm
 
 # yum update
 # yum install foreman-installer
 
-# foreman-installer --enable-foreman-plugin-remote-execution --enable-foreman-proxy-plugin-remote-execution-ssh
+# foreman-installer --enable-foreman-plugin-remote-execution \
+                    --enable-foreman-proxy-plugin-remote-execution-ssh \
+                    --enable-foreman-plugin-remote-execution-cockpit
 
 # firewall-cmd --add-service https
 # firewall-cmd --add-service https --permanent
@@ -73,138 +61,17 @@ More information here: https://theforeman.org/manuals/1.22/quickstart_guide.html
 
 Write down the admin password that the installer outputs.
 
-## Setting up Cockpit
+## Setting up password-less remote execution
 
-We will configure a special Cockpit instance just for Foreman, so we
-need to install Cockpit.
+In order to seamlessly open Cockpit on a host, you need to be able to
+execute remote commands on it without providing any credentials.
 
-```
-# yum install cockpit
-```
+You can store the credentials in the `remote_execution_ssh_user` and
+`remote_execution_ssh_password` host parameters and Foreman will use
+these to connect to Cockpit.
 
-[ More precisely, we only need to install "cockpit-ws" on the machine
-  where Foreman was installed, and on the machines that we want to
-  access via Cockpit, we need to install whatever bits of Cockpit we
-  actually want, but not "cockpit-ws".
-]
-
-This is the configuration for Cockpit itself:
-
-```
-# mkdir -p /etc/foreman-cockpit/cockpit/
-# cat >/etc/foreman-cockpit/cockpit/cockpit.conf
-[WebService]
-LoginTitle = Foreman Cockpit
-UrlRoot = /webcon/
-Origins = https://foreman.demo.lan
-
-[Bearer]
-Action = remote-login-ssh
-
-[SSH-Login]
-command = /opt/theforeman/tfm/root/usr/share/gems/gems/foreman_remote_execution-1.8.0/extra/cockpit/foreman-cockpit-session
-
-[OAuth]
-Url = /cockpit/redirect
-```
-
-Note that the "Origins" value is the name of the machine.  If you have
-used something else than "foreman.demo.lan", make sure to use the
-right name there.
-
-Also configure the session helper:
-
-```
-# cat >/etc/foreman-cockpit/settings.yml
-:foreman_url: https://foreman.demo.lan
-
-:ssl_ca_file: /etc/puppetlabs/puppet/ssl/certs/ca.pem
-:ssl_certificate: /etc/puppetlabs/puppet/ssl/certs/foreman.demo.lan.pem
-:ssl_private_key: /etc/puppetlabs/puppet/ssl/private_keys/foreman.demo.lan.pem
-```
-
-This is for starting the special Cockpit:
-```
-# cat >/etc/systemd/system/foreman-cockpit.service
-[Unit]
-Description=Foreman Cockpit Web Service
-
-[Service]
-Environment=XDG_CONFIG_DIRS=/etc/foreman-cockpit/
-ExecStart=/usr/libexec/cockpit-ws --no-tls --address 127.0.0.1 --port 9999
-User=foreman
-Group=foreman
-
-[Install]
-WantedBy=multi-user.target
-```
-
-[ It would be better to make this socket activated, of course, but we
-  don't do that here for simplicity.
-]
-
-This instance of Cockpit is configured to be served by a reverse
-proxy.  Thus, we need to enable `mod_proxy`.
-
-```
-# cat >/etc/httpd/conf.modules.d/proxy.load
-LoadModule proxy_module modules/mod_proxy.so
-LoadModule proxy_wstunnel_module modules/mod_proxy_wstunnel.so
-LoadModule proxy_http_module modules/mod_proxy_http.so
-```
-
-```
-# cat >/etc/httpd/conf.d/05-foreman-ssl.d/cockpit.conf
-ProxyPreserveHost On
-ProxyRequests Off
-
-RewriteEngine On
-RewriteCond %{HTTP:Upgrade} =websocket [NC]
-RewriteRule /webcon/(.*)           ws://127.0.0.1:9999/webcon/$1 [P]
-RewriteCond %{HTTP:Upgrade} !=websocket [NC]
-RewriteRule /webcon/(.*)           http://127.0.0.1:9999/webcon/$1 [P]
-```
-
-Restart and enable as needed.
-
-```
-# systemctl restart httpd
-# systemctl enable --now foreman-cockpit
-```
-
-## Configuring Foreman
-
-Open `https://foreman.demo.lan` in a browser, accept the self-signed
-certificate, and log in with the credentials given to you by the
-installer.
-
-If you don't have those credentials anymore, you can get new ones with
-this command:
-
-```
-# foreman-rake permissions:reset
-```
-
-The installer has already entered the virtual machine and the smart
-proxy into the database.  However, they might or might not be fully
-associated with the right organization and location.  Make sure they
-are both in the "Default Organization" and "Default Location".
-
-[ Looks like a installer bug to me right now. More later on how to
-  correct this, if needed.  For now, just poke around in the UI and
-  try to figure it out. :-)
-]
-
-Go to "Administer / Settings / RemoteExecution" and change "Cockpit
-URL" to `/webcon/=%{host}`.
-
-[ Typing the "/" character into the text input field for the new value
-  is impossible because the "/" yanks the focus to the filter text
-  input.  But copy/paste works.
-]
-
-The last thing is to allow the remote execution plugin to log into the
-virtual machine without password:
+Instead of storing the password in a host parameter, you can also copy
+the public key of the proxy over to the host:
 
 ```
 # ssh-copy-id -i ~foreman-proxy/.ssh/id_rsa_foreman_proxy root@foreman.demo.lan
